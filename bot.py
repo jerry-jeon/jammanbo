@@ -42,6 +42,9 @@ notion_creator = NotionTaskCreator(api_key=NOTION_API_KEY)
 daily_scanner: DailyScanner | None = None
 cleanup_manager: CleanupManager | None = None
 
+# Pending clarifications: chat_id → {original_message, task}
+_pending_clarifications: dict[int, dict] = {}
+
 
 def _format_confirmation(task: ClassifiedTask) -> str:
     """Format a human-readable confirmation message."""
@@ -80,6 +83,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not message_text:
         return
 
+    # Step 0: Check if this is a reply to a clarification question
+    chat_id = update.effective_chat.id
+    pending = _pending_clarifications.pop(chat_id, None)
+    if pending:
+        combined = f"{pending['original_message']} — {message_text}"
+        task = pending["task"]
+        task.name = f"{task.name} — {message_text}"
+        task.follow_up = None  # Don't ask again
+        try:
+            await notion_creator.create_task(task)
+            reply = _format_confirmation(task)
+            related = await _find_related_tasks(task)
+            if related:
+                reply += related
+            await update.message.reply_text(reply)
+        except Exception as e:
+            logger.error("Notion API failed: %s", e)
+            await update.message.reply_text(
+                f"❌ Notion save failed: {str(e)[:100]}"
+            )
+        return
+
     # Step 1: Classify with Claude
     result: ClassifiedTask | TaskAction | TaskQuery | None = None
     classification_failed = False
@@ -105,7 +130,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"📝 Noted as memo: '{result.name}'")
         return
 
-    # Step 4: Create in Notion
+    # Step 5: Handle follow_up — ask clarifying question before creating
+    if result and result.follow_up:
+        _pending_clarifications[update.effective_chat.id] = {
+            "original_message": message_text,
+            "task": result,
+        }
+        await update.message.reply_text(
+            f"❓ *{result.name}*\n{result.follow_up}",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Step 6: Create in Notion
     try:
         if classification_failed:
             await notion_creator.create_raw_task(message_text)
@@ -116,6 +153,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             await notion_creator.create_task(result)
             reply = _format_confirmation(result)
+            # Search for related active tasks
+            related = await _find_related_tasks(result)
+            if related:
+                reply += related
             await update.message.reply_text(reply)
     except Exception as e:
         logger.error("Notion API failed: %s", e)
@@ -123,6 +164,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"❌ Notion save failed: {str(e)[:100]}\n"
             "Please try again later."
         )
+
+
+async def _find_related_tasks(task: ClassifiedTask) -> str:
+    """Search for related active tasks and format as a hint."""
+    if not task.search_hint:
+        return ""
+    try:
+        pages = await notion_creator.search_tasks_by_title(
+            task.search_hint, active_only=True
+        )
+        # Filter out the task we just created (by exact title match)
+        pages = [p for p in pages if _get_title(p) != task.name]
+        if not pages:
+            return ""
+        lines = ["\n\n📎 *Related active tasks:*"]
+        for page in pages[:5]:
+            title = _get_title(page)
+            status = _get_status(page)
+            lines.append(f"  • {title}  \\[{status}]")
+        return "\n".join(lines)
+    except Exception:
+        logger.exception("Failed to search related tasks")
+        return ""
 
 
 async def _handle_query(update: Update, query: TaskQuery) -> None:

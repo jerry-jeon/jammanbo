@@ -41,8 +41,26 @@ If the user wants to CREATE a new task/memo/idea:
   "tags": [],
   "product": [],
   "action_date": "YYYY-MM-DD" | null,
-  "link": "URL" | null
+  "link": "URL" | null,
+  "follow_up": "clarifying question" | null,
+  "search_hint": "keywords to find related existing tasks" | null
 }}
+
+### follow_up (IMPORTANT)
+Set follow_up when the task name is too vague to recall later. Ask for the specific detail that's missing.
+- "review a PR by Friday" → follow_up: "Which PR? (repo name or PR number)"
+- "send that document" → follow_up: "Which document?"
+- "talk to someone about the bug" → follow_up: "Who, and which bug?"
+- "PR #142 리뷰" → follow_up: null (specific enough)
+- "UIKit 릴리즈 노트 작성" → follow_up: null (clear and memorable)
+The test: "If I read this task title 3 days later, will I know exactly what to do?" If no → set follow_up.
+
+### search_hint
+Set search_hint to keywords that might match existing active tasks in Notion.
+- "review UIKit PR" → search_hint: "UIKit"
+- "follow up on the SBM tutorial" → search_hint: "SBM tutorial"
+- "오늘 힘들다" (memo) → search_hint: null
+Only set when there's a reasonable chance of overlap with existing tasks.
 
 If the user wants to SEARCH/LOOK UP existing tasks (no modification):
 {{

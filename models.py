@@ -80,3 +80,11 @@ class ClassifiedTask(BaseModel):
     product: list[str] = Field(default_factory=list)
     action_date: Optional[date] = None
     link: Optional[str] = None
+    follow_up: Optional[str] = Field(
+        None,
+        description="Clarifying question if the task is too vague to recall later",
+    )
+    search_hint: Optional[str] = Field(
+        None,
+        description="Keywords to search for related existing tasks",
+    )
