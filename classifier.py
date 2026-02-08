@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from anthropic import AsyncAnthropic
 
-from models import ClassifiedTask, TaskAction
+from models import ClassifiedTask, TaskAction, TaskQuery
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,12 @@ If the user wants to CREATE a new task/memo/idea:
   "link": "URL" | null
 }}
 
+If the user wants to SEARCH/LOOK UP existing tasks (no modification):
+{{
+  "type": "query",
+  "search_query": "keywords to find the tasks"
+}}
+
 If the user wants to MODIFY existing tasks (change status, mark as done, delete, etc.):
 {{
   "type": "action",
@@ -66,6 +72,7 @@ UIKit, SBM, AI
 - "task": Actionable work item with a clear deliverable
 - "memo": Personal note, emotional expression, observation (e.g., "오늘 힘들다", "회의 분위기 좋았음")
 - "idea": Creative thought or future possibility without immediate action (e.g., "SBM 튜토리얼 영상 아이디어")
+- "query": User wants to SEARCH or LOOK UP existing tasks without changing them. Signals like "show me", "find", "list", "what are", "tell me about", "do I have". Extract search keywords into search_query.
 - "action": User wants to UPDATE/MODIFY existing tasks. Signals like "mark as done", "complete", "delete", "change status", "move to", referring to existing items by name/description. Extract search keywords into search_query and target status into new_status.
 
 ### Date Handling (KST)
@@ -120,8 +127,8 @@ class Classifier:
     def __init__(self, api_key: str):
         self.client = AsyncAnthropic(api_key=api_key)
 
-    async def classify(self, message: str) -> ClassifiedTask | TaskAction:
-        """Classify a user message into a structured task or action."""
+    async def classify(self, message: str) -> ClassifiedTask | TaskAction | TaskQuery:
+        """Classify a user message into a structured task, action, or query."""
         system_prompt = self._build_system_prompt()
 
         response = await self.client.messages.create(
@@ -140,8 +147,11 @@ class Classifier:
 
         parsed = json.loads(cleaned)
 
-        if parsed.get("type") == "action":
+        msg_type = parsed.get("type")
+        if msg_type == "action":
             return TaskAction.model_validate(parsed)
+        if msg_type == "query":
+            return TaskQuery.model_validate(parsed)
         return ClassifiedTask.model_validate(parsed)
 
     def _build_system_prompt(self) -> str:

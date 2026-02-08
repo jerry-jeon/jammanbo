@@ -18,8 +18,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from classifier import Classifier
 from cleanup import CleanupManager
-from models import ClassifiedTask, TaskAction, TaskType
-from notion_service import NotionTaskCreator, _get_title, _get_status
+from models import ClassifiedTask, TaskAction, TaskQuery, TaskType
+from notion_service import NotionTaskCreator, _get_title, _get_status, _get_action_date
 from scanner import DailyScanner
 
 load_dotenv()
@@ -81,7 +81,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # Step 1: Classify with Claude
-    result: ClassifiedTask | TaskAction | None = None
+    result: ClassifiedTask | TaskAction | TaskQuery | None = None
     classification_failed = False
     try:
         result = await classifier.classify(message_text)
@@ -90,12 +90,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error("Classification failed: %s", e)
         classification_failed = True
 
-    # Step 2: Handle action — search and update existing tasks
+    # Step 2: Handle query — search and display results
+    if isinstance(result, TaskQuery):
+        await _handle_query(update, result)
+        return
+
+    # Step 3: Handle action — search and update existing tasks
     if isinstance(result, TaskAction):
         await _handle_action(update, result)
         return
 
-    # Step 3: Handle memo — acknowledge only, don't save to Notion
+    # Step 4: Handle memo — acknowledge only, don't save to Notion
     if result and result.type == TaskType.MEMO:
         await update.message.reply_text(f"📝 Noted as memo: '{result.name}'")
         return
@@ -118,6 +123,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"❌ Notion save failed: {str(e)[:100]}\n"
             "Please try again later."
         )
+
+
+async def _handle_query(update: Update, query: TaskQuery) -> None:
+    """Search Notion and display results (read-only)."""
+    try:
+        pages = await notion_creator.search_tasks_by_title(
+            query.search_query, active_only=False
+        )
+    except Exception as e:
+        logger.error("Notion search failed: %s", e)
+        await update.message.reply_text(f"❌ Search failed: {str(e)[:100]}")
+        return
+
+    if not pages:
+        await update.message.reply_text(
+            f"🔍 No tasks found matching '{query.search_query}'."
+        )
+        return
+
+    lines = [f"🔍 *{len(pages)} task(s) matching '{query.search_query}':*\n"]
+    for i, page in enumerate(pages[:15], 1):
+        title = _get_title(page)
+        status = _get_status(page)
+        date = _get_action_date(page)
+        date_str = f" | {date}" if date else ""
+        lines.append(f"{i}. {title}  \\[{status}]{date_str}")
+
+    if len(pages) > 15:
+        lines.append(f"\n… and {len(pages) - 15} more")
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3997] + "…"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 # Pending action store: short key → {page_id, new_status}

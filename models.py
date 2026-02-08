@@ -12,6 +12,7 @@ class TaskType(str, Enum):
     MEMO = "memo"
     IDEA = "idea"
     ACTION = "action"
+    QUERY = "query"
 
 
 class Status(str, Enum):
@@ -57,6 +58,13 @@ class TaskAction(BaseModel):
     type: TaskType = TaskType.ACTION
     search_query: str = Field(..., description="Keywords to search for in task titles")
     new_status: Optional[str] = Field(None, description="Target status to set")
+
+
+class TaskQuery(BaseModel):
+    """Output model when user wants to search/look up existing tasks."""
+
+    type: TaskType = TaskType.QUERY
+    search_query: str = Field(..., description="Keywords to search for in task titles")
 
 
 class ClassifiedTask(BaseModel):

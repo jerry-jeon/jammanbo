@@ -242,17 +242,24 @@ class NotionTaskCreator:
         logger.info("Updated task %s status to '%s'", page_id, new_status)
         return page
 
-    async def search_tasks_by_title(self, query: str) -> list[dict]:
+    async def search_tasks_by_title(
+        self, query: str, active_only: bool = True
+    ) -> list[dict]:
         """Search for tasks whose title contains the query string."""
-        response = await self.client.data_sources.query(
-            data_source_id=DATA_SOURCE_ID,
-            filter={
+        if active_only:
+            filter_obj = {
                 "and": [
                     {"property": "Name", "title": {"contains": query}},
                     {"property": "Status", "select": {"does_not_equal": "Done"}},
                     {"property": "Status", "select": {"does_not_equal": "Won't do"}},
                 ]
-            },
+            }
+        else:
+            filter_obj = {"property": "Name", "title": {"contains": query}}
+
+        response = await self.client.data_sources.query(
+            data_source_id=DATA_SOURCE_ID,
+            filter=filter_obj,
             sorts=[{"timestamp": "last_edited_time", "direction": "descending"}],
             page_size=20,
         )
