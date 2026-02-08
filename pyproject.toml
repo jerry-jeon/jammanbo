@@ -1,0 +1,13 @@
+[project]
+name = "jammanbo"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.79.0",
+    "apscheduler>=3.10.0",
+    "notion-client>=2.7.0",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
+    "python-telegram-bot>=22.6",
+]
