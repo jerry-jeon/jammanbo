@@ -120,13 +120,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
 
-# Pending action store: short key → {page_ids, new_status}
+# Pending action store: short key → {page_id, new_status}
 _pending_actions: dict[str, dict] = {}
 _action_counter = 0
 
 
 async def _handle_action(update: Update, action: TaskAction) -> None:
-    """Search Notion for matching tasks and show confirmation."""
+    """Search Notion for matching tasks, send each as individual card."""
     global _action_counter
 
     try:
@@ -144,43 +144,45 @@ async def _handle_action(update: Update, action: TaskAction) -> None:
         )
         return
 
-    # Format match list
     status_label = f" → {action.new_status}" if action.new_status else ""
-    lines = [f"🔍 Found {len(pages)} task(s) matching '*{action.search_query}*'{status_label}:\n"]
-    for i, page in enumerate(pages[:10], 1):
+    await update.message.reply_text(
+        f"🔍 Found {len(pages)} task(s) matching '{action.search_query}'{status_label}:"
+    )
+
+    # Send each match as its own message with per-task buttons
+    for page in pages[:10]:
+        page_id = page["id"]
         title = _get_title(page)
         status = _get_status(page)
-        lines.append(f"{i}. {title}  \\[{status}]")
 
-    if len(pages) > 10:
-        lines.append(f"… and {len(pages) - 10} more")
+        _action_counter += 1
+        key = str(_action_counter)
+        _pending_actions[key] = {
+            "page_id": page_id,
+            "new_status": action.new_status,
+            "title": title,
+        }
 
-    # Store pending action with a short key (fits 64-byte callback limit)
-    _action_counter += 1
-    key = str(_action_counter)
-    _pending_actions[key] = {
-        "page_ids": [p["id"] for p in pages[:10]],
-        "new_status": action.new_status,
-    }
+        text = f"*{title}*\nStatus: {status}"
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    f"{action.new_status} ✓" if action.new_status else "Update ✓",
+                    callback_data=f"action_yes:{key}",
+                ),
+                InlineKeyboardButton("Skip", callback_data=f"action_no:{key}"),
+            ]
+        ])
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Confirm ✓", callback_data=f"action_yes:{key}"),
-            InlineKeyboardButton("Cancel ✗", callback_data=f"action_no:{key}"),
-        ]
-    ])
-
-    await update.message.reply_text(
-        "\n".join(lines),
-        parse_mode="Markdown",
-        reply_markup=keyboard,
-    )
+        await update.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=keyboard
+        )
 
 
 async def handle_action_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Handle action confirm/cancel button presses."""
+    """Handle per-task action button presses."""
     query = update.callback_query
     await query.answer()
 
@@ -191,28 +193,29 @@ async def handle_action_callback(
     action_type, key = data.split(":", 1)
     pending = _pending_actions.pop(key, None)
 
-    if action_type == "action_no" or not pending:
-        await query.edit_message_text("❌ Action cancelled.")
+    if not pending:
+        await query.edit_message_text("⏳ Already handled.")
+        return
+
+    title = pending.get("title", "task")
+
+    if action_type == "action_no":
+        await query.edit_message_text(f"⏭ Skipped: {title}")
         return
 
     new_status = pending["new_status"]
-    page_ids = pending["page_ids"]
+    page_id = pending["page_id"]
 
     if not new_status:
         await query.edit_message_text("❌ No target status specified.")
         return
 
-    success = 0
-    for pid in page_ids:
-        try:
-            await notion_creator.update_task_status(pid, new_status)
-            success += 1
-        except Exception:
-            logger.exception("Failed to update task %s", pid)
-
-    await query.edit_message_text(
-        f"✅ Updated {success}/{len(page_ids)} task(s) to '{new_status}'."
-    )
+    try:
+        await notion_creator.update_task_status(page_id, new_status)
+        await query.edit_message_text(f"✅ {title} → {new_status}")
+    except Exception:
+        logger.exception("Failed to update task %s", page_id)
+        await query.edit_message_text(f"❌ Failed to update: {title}")
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
