@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from anthropic import AsyncAnthropic
 
-from models import ClassifiedTask
+from models import ClassifiedTask, TaskAction
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,9 @@ Given a natural language input (usually in Korean), extract and classify it into
 - Timezone: Asia/Seoul (KST)
 
 ## Output Format
-Return ONLY a JSON object (no markdown, no explanation):
+Return ONLY a JSON object (no markdown, no explanation).
+
+If the user wants to CREATE a new task/memo/idea:
 {{
   "type": "task" | "memo" | "idea",
   "name": "concise task title (keep the original language, refine for clarity)",
@@ -40,6 +42,13 @@ Return ONLY a JSON object (no markdown, no explanation):
   "product": [],
   "action_date": "YYYY-MM-DD" | null,
   "link": "URL" | null
+}}
+
+If the user wants to MODIFY existing tasks (change status, mark as done, delete, etc.):
+{{
+  "type": "action",
+  "search_query": "keywords to find the tasks (extracted from the user message)",
+  "new_status": "Done" | "Won't do" | "TODO" | "In progress" | "To Schedule" | null
 }}
 
 ## Allowed Tags
@@ -57,6 +66,7 @@ UIKit, SBM, AI
 - "task": Actionable work item with a clear deliverable
 - "memo": Personal note, emotional expression, observation (e.g., "오늘 힘들다", "회의 분위기 좋았음")
 - "idea": Creative thought or future possibility without immediate action (e.g., "SBM 튜토리얼 영상 아이디어")
+- "action": User wants to UPDATE/MODIFY existing tasks. Signals like "mark as done", "complete", "delete", "change status", "move to", referring to existing items by name/description. Extract search keywords into search_query and target status into new_status.
 
 ### Date Handling (KST)
 - "오늘" → {today}
@@ -110,8 +120,8 @@ class Classifier:
     def __init__(self, api_key: str):
         self.client = AsyncAnthropic(api_key=api_key)
 
-    async def classify(self, message: str) -> ClassifiedTask:
-        """Classify a user message into a structured task."""
+    async def classify(self, message: str) -> ClassifiedTask | TaskAction:
+        """Classify a user message into a structured task or action."""
         system_prompt = self._build_system_prompt()
 
         response = await self.client.messages.create(
@@ -129,6 +139,9 @@ class Classifier:
         cleaned = re.sub(r"\s*```$", "", cleaned)
 
         parsed = json.loads(cleaned)
+
+        if parsed.get("type") == "action":
+            return TaskAction.model_validate(parsed)
         return ClassifiedTask.model_validate(parsed)
 
     def _build_system_prompt(self) -> str:

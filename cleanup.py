@@ -105,16 +105,16 @@ class CleanupManager:
         created = _get_created_time(page)[:10]
 
         text = (
-            f"🧹 *정리 대상*\n"
+            f"🧹 *Cleanup candidate*\n"
             f"*{title}*\n"
             f"Status: {status} | Created: {created}"
         )
 
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("유효 ✓", callback_data=f"cleanup_keep:{page_id}"),
-                InlineKeyboardButton("삭제 ✗", callback_data=f"cleanup_delete:{page_id}"),
-                InlineKeyboardButton("나중에 ⏭", callback_data=f"cleanup_later:{page_id}"),
+                InlineKeyboardButton("Keep ✓", callback_data=f"cleanup_keep:{page_id}"),
+                InlineKeyboardButton("Delete ✗", callback_data=f"cleanup_delete:{page_id}"),
+                InlineKeyboardButton("Later ⏭", callback_data=f"cleanup_later:{page_id}"),
             ]
         ])
 
@@ -149,7 +149,7 @@ class CleanupManager:
         """Mark as valid — remove from queue."""
         self._remove_from_queue(page_id)
         title = self._get_title_from_message(query.message.text)
-        await query.edit_message_text(f"✅ 유효 처리: {title}")
+        await query.edit_message_text(f"✅ Kept: {title}")
 
     async def _handle_delete(self, query, page_id: str) -> None:
         """Update Notion to 'Won't do', remove from queue."""
@@ -157,10 +157,10 @@ class CleanupManager:
             await self.notion.update_task_status(page_id, "Won't do")
             self._remove_from_queue(page_id)
             title = self._get_title_from_message(query.message.text)
-            await query.edit_message_text(f"🗑 삭제 처리: {title}\nNotion에서 Won't do로 변경됨")
+            await query.edit_message_text(f"🗑 Deleted: {title}\nChanged to Won't do in Notion")
         except Exception:
             logger.exception("Failed to update Notion for %s", page_id)
-            await query.edit_message_text("❌ Notion 업데이트 실패. 다시 시도해주세요.")
+            await query.edit_message_text("❌ Notion update failed. Please try again.")
 
     async def _handle_later(self, query, page_id: str) -> None:
         """Move to end of queue."""
@@ -172,7 +172,7 @@ class CleanupManager:
         state["cleanup_queue"] = queue
         _save_state(state)
         title = self._get_title_from_message(query.message.text)
-        await query.edit_message_text(f"⏭ 나중에 다시 볼게요: {title}")
+        await query.edit_message_text(f"⏭ Deferred: {title}")
 
     def _remove_from_queue(self, page_id: str) -> None:
         state = _load_state()

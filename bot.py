@@ -14,10 +14,12 @@ from telegram.ext import (
     filters,
 )
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 from classifier import Classifier
 from cleanup import CleanupManager
-from models import ClassifiedTask, TaskType
-from notion_service import NotionTaskCreator
+from models import ClassifiedTask, TaskAction, TaskType
+from notion_service import NotionTaskCreator, _get_title, _get_status
 from scanner import DailyScanner
 
 load_dotenv()
@@ -43,7 +45,7 @@ cleanup_manager: CleanupManager | None = None
 
 def _format_confirmation(task: ClassifiedTask) -> str:
     """Format a human-readable confirmation message."""
-    parts = [f"✅ Task 생성: '{task.name}'"]
+    parts = [f"✅ Task created: '{task.name}'"]
 
     if task.action_date:
         parts.append(f"📅 Due: {task.action_date.isoformat()}")
@@ -63,9 +65,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
     await update.message.reply_text(
-        "🐻 잠만보 봇이에요!\n"
-        "메시지를 보내면 자동으로 Notion Task를 만들어 드려요.\n"
-        "매일 09:00에 데일리 요약을 보내드려요."
+        "🐻 Jammanbo bot here!\n"
+        "Send a message and I'll auto-create a Notion task.\n"
+        "Daily summary at 09:00 KST."
     )
 
 
@@ -79,45 +81,145 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # Step 1: Classify with Claude
-    task: ClassifiedTask | None = None
+    result: ClassifiedTask | TaskAction | None = None
     classification_failed = False
     try:
-        task = await classifier.classify(message_text)
-        logger.info("Classified as: type=%s name='%s'", task.type.value, task.name)
+        result = await classifier.classify(message_text)
+        logger.info("Classified as: type=%s", result.type.value)
     except Exception as e:
         logger.error("Classification failed: %s", e)
         classification_failed = True
 
-    # Step 2: Handle memo — acknowledge only, don't save to Notion
-    if task and task.type == TaskType.MEMO:
-        await update.message.reply_text(f"📝 메모로 기록했어요: '{task.name}'")
+    # Step 2: Handle action — search and update existing tasks
+    if isinstance(result, TaskAction):
+        await _handle_action(update, result)
         return
 
-    # Step 3: Create in Notion
+    # Step 3: Handle memo — acknowledge only, don't save to Notion
+    if result and result.type == TaskType.MEMO:
+        await update.message.reply_text(f"📝 Noted as memo: '{result.name}'")
+        return
+
+    # Step 4: Create in Notion
     try:
         if classification_failed:
             await notion_creator.create_raw_task(message_text)
             await update.message.reply_text(
-                "⚠️ 자동 분류 실패, 원본 메시지로 Task 생성했어요.\n"
-                "Notion에서 직접 정리해주세요."
+                "⚠️ Auto-classification failed. Task created with raw message.\n"
+                "Please organize it in Notion."
             )
         else:
-            await notion_creator.create_task(task)
-            reply = _format_confirmation(task)
+            await notion_creator.create_task(result)
+            reply = _format_confirmation(result)
             await update.message.reply_text(reply)
     except Exception as e:
         logger.error("Notion API failed: %s", e)
         await update.message.reply_text(
-            f"❌ Notion 저장 실패: {str(e)[:100]}\n"
-            "잠시 후 다시 시도해주세요."
+            f"❌ Notion save failed: {str(e)[:100]}\n"
+            "Please try again later."
         )
+
+
+# Pending action store: short key → {page_ids, new_status}
+_pending_actions: dict[str, dict] = {}
+_action_counter = 0
+
+
+async def _handle_action(update: Update, action: TaskAction) -> None:
+    """Search Notion for matching tasks and show confirmation."""
+    global _action_counter
+
+    try:
+        pages = await notion_creator.search_tasks_by_title(action.search_query)
+    except Exception as e:
+        logger.error("Notion search failed: %s", e)
+        await update.message.reply_text(
+            f"❌ Search failed: {str(e)[:100]}"
+        )
+        return
+
+    if not pages:
+        await update.message.reply_text(
+            f"🔍 No active tasks found matching '{action.search_query}'."
+        )
+        return
+
+    # Format match list
+    status_label = f" → {action.new_status}" if action.new_status else ""
+    lines = [f"🔍 Found {len(pages)} task(s) matching '*{action.search_query}*'{status_label}:\n"]
+    for i, page in enumerate(pages[:10], 1):
+        title = _get_title(page)
+        status = _get_status(page)
+        lines.append(f"{i}. {title}  \\[{status}]")
+
+    if len(pages) > 10:
+        lines.append(f"… and {len(pages) - 10} more")
+
+    # Store pending action with a short key (fits 64-byte callback limit)
+    _action_counter += 1
+    key = str(_action_counter)
+    _pending_actions[key] = {
+        "page_ids": [p["id"] for p in pages[:10]],
+        "new_status": action.new_status,
+    }
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Confirm ✓", callback_data=f"action_yes:{key}"),
+            InlineKeyboardButton("Cancel ✗", callback_data=f"action_no:{key}"),
+        ]
+    ])
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
+
+
+async def handle_action_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle action confirm/cancel button presses."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    if ":" not in data:
+        return
+
+    action_type, key = data.split(":", 1)
+    pending = _pending_actions.pop(key, None)
+
+    if action_type == "action_no" or not pending:
+        await query.edit_message_text("❌ Action cancelled.")
+        return
+
+    new_status = pending["new_status"]
+    page_ids = pending["page_ids"]
+
+    if not new_status:
+        await query.edit_message_text("❌ No target status specified.")
+        return
+
+    success = 0
+    for pid in page_ids:
+        try:
+            await notion_creator.update_task_status(pid, new_status)
+            success += 1
+        except Exception:
+            logger.exception("Failed to update task %s", pid)
+
+    await query.edit_message_text(
+        f"✅ Updated {success}/{len(page_ids)} task(s) to '{new_status}'."
+    )
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Debug command to manually trigger the daily job."""
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
-    await update.message.reply_text("🔄 수동 스캔 시작...")
+    await update.message.reply_text("🔄 Running manual scan...")
     await scheduled_daily_job()
 
 
@@ -174,6 +276,9 @@ def main():
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(
         CallbackQueryHandler(handle_cleanup_callback, pattern=r"^cleanup_")
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_action_callback, pattern=r"^action_")
     )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

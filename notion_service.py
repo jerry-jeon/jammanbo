@@ -7,6 +7,7 @@ from models import ClassifiedTask
 logger = logging.getLogger(__name__)
 
 DATABASE_ID = "8c494555019043ebb83fe1afb5280467"
+DATA_SOURCE_ID = "eca92760-91c2-4dff-ae10-ff5a080e8df0"
 SOURCE_VALUE = "jammanbo-input"
 
 ACTIVE_STATUSES = ["TODO", "In progress", "To Schedule"]
@@ -96,8 +97,8 @@ class NotionTaskCreator:
 
     async def query_overdue_tasks(self, today_iso: str) -> list[dict]:
         """Action Date < today, Status not Done/Won't do."""
-        response = await self.client.databases.query(
-            database_id=DATABASE_ID,
+        response = await self.client.data_sources.query(
+            data_source_id=DATA_SOURCE_ID,
             filter={
                 "and": [
                     {"property": "Action Date", "date": {"before": today_iso}},
@@ -112,8 +113,8 @@ class NotionTaskCreator:
 
     async def query_today_tasks(self, today_iso: str) -> list[dict]:
         """Action Date = today, active statuses."""
-        response = await self.client.databases.query(
-            database_id=DATABASE_ID,
+        response = await self.client.data_sources.query(
+            data_source_id=DATA_SOURCE_ID,
             filter={
                 "and": [
                     {"property": "Action Date", "date": {"equals": today_iso}},
@@ -128,8 +129,8 @@ class NotionTaskCreator:
 
     async def query_this_week_tasks(self, start_iso: str, end_iso: str) -> list[dict]:
         """Action Date between start (exclusive today) and end (Sunday)."""
-        response = await self.client.databases.query(
-            database_id=DATABASE_ID,
+        response = await self.client.data_sources.query(
+            data_source_id=DATA_SOURCE_ID,
             filter={
                 "and": [
                     {"property": "Action Date", "date": {"after": start_iso}},
@@ -145,8 +146,8 @@ class NotionTaskCreator:
 
     async def query_stale_tasks(self, cutoff_iso: str) -> list[dict]:
         """Last edited > 2 weeks ago, Status = TODO or In progress."""
-        response = await self.client.databases.query(
-            database_id=DATABASE_ID,
+        response = await self.client.data_sources.query(
+            data_source_id=DATA_SOURCE_ID,
             filter={
                 "and": [
                     {"property": "Status", "select": {"does_not_equal": "Done"}},
@@ -175,7 +176,7 @@ class NotionTaskCreator:
             start_cursor = None
             while has_more:
                 kwargs: dict = {
-                    "database_id": DATABASE_ID,
+                    "data_source_id": DATA_SOURCE_ID,
                     "filter": {
                         "property": "Status",
                         "select": {"equals": status_name},
@@ -184,7 +185,7 @@ class NotionTaskCreator:
                 }
                 if start_cursor:
                     kwargs["start_cursor"] = start_cursor
-                response = await self.client.databases.query(**kwargs)
+                response = await self.client.data_sources.query(**kwargs)
                 count = len(response["results"])
                 if status_name == "In progress":
                     in_progress += count
@@ -203,7 +204,7 @@ class NotionTaskCreator:
 
         while has_more:
             kwargs: dict = {
-                "database_id": DATABASE_ID,
+                "data_source_id": DATA_SOURCE_ID,
                 "filter": {
                     "and": [
                         {
@@ -225,7 +226,7 @@ class NotionTaskCreator:
             }
             if start_cursor:
                 kwargs["start_cursor"] = start_cursor
-            response = await self.client.databases.query(**kwargs)
+            response = await self.client.data_sources.query(**kwargs)
             results.extend(response["results"])
             has_more = response.get("has_more", False)
             start_cursor = response.get("next_cursor")
@@ -240,6 +241,22 @@ class NotionTaskCreator:
         )
         logger.info("Updated task %s status to '%s'", page_id, new_status)
         return page
+
+    async def search_tasks_by_title(self, query: str) -> list[dict]:
+        """Search for tasks whose title contains the query string."""
+        response = await self.client.data_sources.query(
+            data_source_id=DATA_SOURCE_ID,
+            filter={
+                "and": [
+                    {"property": "Name", "title": {"contains": query}},
+                    {"property": "Status", "select": {"does_not_equal": "Done"}},
+                    {"property": "Status", "select": {"does_not_equal": "Won't do"}},
+                ]
+            },
+            sorts=[{"timestamp": "last_edited_time", "direction": "descending"}],
+            page_size=20,
+        )
+        return response["results"]
 
     async def get_page(self, page_id: str) -> dict:
         """Fetch a single page by ID."""

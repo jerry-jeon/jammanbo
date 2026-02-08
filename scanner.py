@@ -60,7 +60,7 @@ class DailyScanner:
             logger.exception("Failed to query Notion for daily scan")
             await self.bot.send_message(
                 chat_id=self.chat_id,
-                text="❌ 데일리 스캔 중 Notion 조회 실패. 로그를 확인하세요.",
+                text="❌ Daily scan failed: Notion query error. Check logs.",
             )
             return
 
@@ -128,7 +128,7 @@ class DailyScanner:
 
         # No items at all
         if not overdue and not today_tasks and not week_tasks and not stale:
-            lines.append("✨ 모든 게 깔끔해요! 할 일이 없습니다.")
+            lines.append("✨ All clear! Nothing on the radar.")
             lines.append("")
 
         # Stats footer
@@ -179,7 +179,7 @@ class DailyScanner:
                 text=(
                     f"⚠️ *Overload Alert*\n"
                     f"Active tasks: {total_active} (threshold: {OVERLOAD_THRESHOLD})\n"
-                    f"정리가 필요해 보여요!"
+                    f"Time to triage and cut some tasks!"
                 ),
                 parse_mode="Markdown",
             )
@@ -189,8 +189,8 @@ class DailyScanner:
                 chat_id=self.chat_id,
                 text=(
                     f"🚨 *Overdue Alert*\n"
-                    f"밀린 작업 {len(overdue)}개!\n"
-                    f"오늘 하나라도 처리해볼까요?"
+                    f"{len(overdue)} tasks past deadline!\n"
+                    f"Can you knock one out today?"
                 ),
                 parse_mode="Markdown",
             )
