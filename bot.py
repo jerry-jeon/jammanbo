@@ -139,28 +139,17 @@ async def scheduled_daily_job() -> None:
     logger.info("Finished scheduled daily job")
 
 
-def main():
+async def post_init(application: Application) -> None:
+    """Called after the event loop is running — safe to start AsyncIOScheduler."""
     global daily_scanner, cleanup_manager
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    # Initialize Phase 2 & 3 modules
     daily_scanner = DailyScanner(
-        bot=app.bot, chat_id=TELEGRAM_CHAT_ID, notion=notion_creator
+        bot=application.bot, chat_id=TELEGRAM_CHAT_ID, notion=notion_creator
     )
     cleanup_manager = CleanupManager(
-        bot=app.bot, chat_id=TELEGRAM_CHAT_ID, notion=notion_creator
+        bot=application.bot, chat_id=TELEGRAM_CHAT_ID, notion=notion_creator
     )
 
-    # Handlers
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("scan", scan_command))
-    app.add_handler(
-        CallbackQueryHandler(handle_cleanup_callback, pattern=r"^cleanup_")
-    )
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # APScheduler — daily at 09:00 KST
     scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
     scheduler.add_job(
         scheduled_daily_job,
@@ -170,6 +159,23 @@ def main():
     )
     scheduler.start()
     logger.info("APScheduler started — daily job at 09:00 KST")
+
+
+def main():
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+
+    # Handlers
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(
+        CallbackQueryHandler(handle_cleanup_callback, pattern=r"^cleanup_")
+    )
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Jammanbo bot is starting...")
     app.run_polling()
