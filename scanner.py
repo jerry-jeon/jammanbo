@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -11,7 +12,8 @@ from notion_service import NotionTaskCreator, _get_title, _get_status, _get_acti
 logger = logging.getLogger(__name__)
 
 KST = ZoneInfo("Asia/Seoul")
-STATE_FILE = Path("state.json")
+STATE_DIR = Path(os.environ.get("STATE_DIR", "."))
+STATE_FILE = STATE_DIR / "state.json"
 OVERLOAD_THRESHOLD = 10
 SEVERE_OVERDUE_THRESHOLD = 3
 MAX_ITEMS_PER_SECTION = 8

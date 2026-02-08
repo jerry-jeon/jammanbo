@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,7 +13,8 @@ from notion_service import NotionTaskCreator, _get_title, _get_status, _get_crea
 logger = logging.getLogger(__name__)
 
 KST = ZoneInfo("Asia/Seoul")
-STATE_FILE = Path("state.json")
+STATE_DIR = Path(os.environ.get("STATE_DIR", "."))
+STATE_FILE = STATE_DIR / "state.json"
 DAILY_CLEANUP_COUNT = 3
 QUEUE_STALE_DAYS = 7
 
