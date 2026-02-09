@@ -1,9 +1,10 @@
 import asyncio
 import json
 import logging
-from collections import deque
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from anthropic import AsyncAnthropic
@@ -14,6 +15,9 @@ from notion_service import NotionTaskCreator, _get_title, _get_status, _get_acti
 logger = logging.getLogger(__name__)
 
 KST = ZoneInfo("Asia/Seoul")
+STATE_DIR = Path(os.environ.get("STATE_DIR", "."))
+STATE_FILE = STATE_DIR / "state.json"
+MAX_HISTORY_MESSAGES = 10
 DAY_NAMES_KO = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
 
 TOOL_DEFINITIONS = [
@@ -255,26 +259,36 @@ class AgentResponse:
     confirmation_request: dict | None = None
 
 
-# Conversation history: chat_id → deque of (role, content) pairs
-_conversation_history: dict[int, deque] = {}
+def _load_state() -> dict:
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text())
+    return {}
 
-MAX_HISTORY_TURNS = 4  # 4 user+assistant pairs = 8 messages
+
+def _save_state(state: dict) -> None:
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
 
 
 def get_conversation_messages(chat_id: int, new_user_message: str) -> list[dict]:
-    """Build messages list from conversation history + new message."""
-    history = _conversation_history.get(chat_id, deque(maxlen=MAX_HISTORY_TURNS * 2))
+    """Build messages list from persisted conversation history + new message."""
+    state = _load_state()
+    history = state.get("conversation_history", {}).get(str(chat_id), [])
     messages = list(history)
     messages.append({"role": "user", "content": new_user_message})
     return messages
 
 
 def save_conversation_turn(chat_id: int, user_text: str, assistant_text: str) -> None:
-    """Save a user+assistant turn to conversation history (text only)."""
-    if chat_id not in _conversation_history:
-        _conversation_history[chat_id] = deque(maxlen=MAX_HISTORY_TURNS * 2)
-    _conversation_history[chat_id].append({"role": "user", "content": user_text})
-    _conversation_history[chat_id].append({"role": "assistant", "content": assistant_text})
+    """Save a user+assistant turn to persistent conversation history."""
+    state = _load_state()
+    if "conversation_history" not in state:
+        state["conversation_history"] = {}
+    key = str(chat_id)
+    history = state["conversation_history"].get(key, [])
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": assistant_text})
+    state["conversation_history"][key] = history[-MAX_HISTORY_MESSAGES:]
+    _save_state(state)
 
 
 class Agent:
