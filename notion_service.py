@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from notion_client import AsyncClient
@@ -297,3 +298,28 @@ class NotionTaskCreator:
                 text_parts.append(text)
 
         return "\n".join(text_parts)
+
+    async def fetch_pages_with_content(
+        self, pages: list[dict], max_pages: int = 10
+    ) -> list[dict]:
+        """Fetch body content for multiple pages with rate limiting.
+
+        Returns list of {"page_id", "title", "status", "action_date", "body_content"}.
+        Limits concurrency to 3 to respect Notion's avg 3 req/s rate limit.
+        """
+        semaphore = asyncio.Semaphore(3)
+
+        async def _fetch_one(page: dict) -> dict:
+            page_id = page["id"]
+            async with semaphore:
+                content = await self.get_page_content(page_id)
+            return {
+                "page_id": page_id,
+                "title": _get_title(page),
+                "status": _get_status(page),
+                "action_date": _get_action_date(page) or None,
+                "body_content": content if content else "(본문 없음)",
+            }
+
+        tasks = [_fetch_one(p) for p in pages[:max_pages]]
+        return await asyncio.gather(*tasks)

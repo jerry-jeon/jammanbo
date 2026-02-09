@@ -71,7 +71,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "search_tasks",
-        "description": "Search existing tasks by title keywords.",
+        "description": "Search existing tasks by title keywords. Returns up to 10 results with body content included.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -378,18 +378,11 @@ class Agent:
         return {"success": True, "page_id": page["id"], "name": task.name}
 
     async def _tool_search_tasks(self, input_data: dict) -> dict:
-        """Search tasks by title."""
+        """Search tasks by title, including body content for up to 10 results."""
         query = input_data["query"]
         active_only = input_data.get("active_only", True)
         pages = await self.notion.search_tasks_by_title(query, active_only=active_only)
-        tasks = []
-        for page in pages[:15]:
-            tasks.append({
-                "page_id": page["id"],
-                "title": _get_title(page),
-                "status": _get_status(page),
-                "action_date": _get_action_date(page) or None,
-            })
+        tasks = await self.notion.fetch_pages_with_content(pages[:10])
         return {"count": len(pages), "tasks": tasks}
 
     async def _tool_update_task_status(self, input_data: dict) -> dict:
