@@ -16,7 +16,10 @@
       "Bash(git commit:*)",
       "WebFetch(domain:docs.railway.com)",
       "Bash(uv pip show:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(git rebase:*)",
+      "Bash(GIT_EDITOR=\"sed -i ''''\" git rebase --continue)",
+      "Bash(GIT_EDITOR=true git rebase:*)"
     ]
   }
 }

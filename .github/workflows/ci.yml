@@ -13,9 +13,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
       - run: uv sync --frozen
-      - name: Syntax-check all Python files
-        run: |
-          find . -maxdepth 1 -name '*.py' -print0 | xargs -0 -n1 uv run python -m py_compile
+      - run: uv run ruff check .
 
   claude-review:
     if: github.event_name == 'pull_request'
@@ -23,6 +21,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      id-token: write
     steps:
       - uses: anthropics/claude-code-action@v1
         with:
