@@ -11,3 +11,11 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "python-telegram-bot>=22.6",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+]
+
+[tool.ruff]
+exclude = ["test_*.py"]

@@ -17,9 +17,10 @@
       "WebFetch(domain:docs.railway.com)",
       "Bash(uv pip show:*)",
       "Bash(ls:*)",
-      "Bash(git rebase:*)",
-      "Bash(GIT_EDITOR=\"sed -i ''''\" git rebase --continue)",
-      "Bash(GIT_EDITOR=true git rebase:*)"
+      "WebFetch(domain:developers.notion.com)",
+      "Bash(uv run ruff:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)"
     ]
   }
 }
