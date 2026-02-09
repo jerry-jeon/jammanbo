@@ -240,15 +240,23 @@ If the task might overlap with existing work, call search_tasks to find related 
 
 PROACTIVE_PROMPT_SUFFIX = """
 ## Proactive check-in mode
-You are doing an hourly check-in. You have Notion tools to look up the current task state.
-Based on the time of day and what you find, send ONE helpful message. Examples:
+You are doing an hourly check-in. The user message includes a live workspace snapshot
+with overdue tasks, today's tasks, this week's tasks, stale tasks, and active task counts
+fetched directly from Notion. Use this data as your primary source of truth.
+
+You may also use Notion tools (search_tasks, get_task_detail) if you need more detail
+on a specific task from the snapshot.
+
+Based on the snapshot and the time of day, send ONE helpful message. Examples:
 - Ask about progress on a specific in-progress task
 - Remind about an approaching deadline
+- Flag overdue tasks that need attention
 - Suggest tackling a specific task if the schedule is light
 - Note overload and suggest cutting scope
 - If nothing notable, respond with exactly "SKIP" (the bot will not send anything)
 
-Be specific — reference actual task names. Don't send generic motivational messages.
+Be specific — reference actual task names from the snapshot. Don't send generic motivational messages.
+IMPORTANT: Do NOT say the task list is clear unless the snapshot shows 0 active tasks.
 Current time: {now_kst}
 """
 

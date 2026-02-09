@@ -1,13 +1,15 @@
+import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from telegram import Bot
 
 from agent import save_conversation_turn
+from notion_service import NotionTaskCreator, _get_title, _get_status, _get_action_date
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +34,91 @@ class ProactiveManager:
         self.chat_id = chat_id
         self.agent = agent
 
+    async def _fetch_workspace_summary(self) -> str:
+        """Fetch real workspace data from Notion to give the agent accurate context."""
+        notion: NotionTaskCreator = self.agent.notion
+        now = datetime.now(KST)
+        today = now.date()
+        today_iso = today.isoformat()
+
+        # Calculate this week's remaining range (tomorrow through Sunday)
+        days_until_sunday = 6 - today.weekday()
+        if days_until_sunday < 0:
+            days_until_sunday = 0
+        end_of_week = today + timedelta(days=days_until_sunday)
+
+        # Calculate stale cutoff (2 weeks ago)
+        stale_cutoff = (now - timedelta(weeks=2)).isoformat()
+
+        try:
+            overdue, today_tasks, week_tasks, stale_tasks, (in_progress, todo) = (
+                await asyncio.gather(
+                    notion.query_overdue_tasks(today_iso),
+                    notion.query_today_tasks(today_iso),
+                    notion.query_this_week_tasks(today_iso, end_of_week.isoformat()),
+                    notion.query_stale_tasks(stale_cutoff),
+                    notion.query_active_task_count(),
+                )
+            )
+        except Exception:
+            logger.exception("Failed to fetch workspace summary")
+            return ""
+
+        def _format_tasks(pages: list[dict], max_items: int = 10) -> str:
+            if not pages:
+                return "  (none)"
+            lines = []
+            for p in pages[:max_items]:
+                title = _get_title(p)
+                status = _get_status(p)
+                date = _get_action_date(p) or "no date"
+                lines.append(f"  - {title} [{status}] (due: {date})")
+            if len(pages) > max_items:
+                lines.append(f"  ... and {len(pages) - max_items} more")
+            return "\n".join(lines)
+
+        parts = [
+            "## Current workspace snapshot (live from Notion)",
+            "",
+            f"📊 Active tasks: {in_progress} in progress, {todo} TODO",
+            "",
+            f"🔴 Overdue ({len(overdue)}):",
+            _format_tasks(overdue),
+            "",
+            f"🟡 Due today ({len(today_tasks)}):",
+            _format_tasks(today_tasks),
+            "",
+            f"🔵 Rest of this week ({len(week_tasks)}):",
+            _format_tasks(week_tasks),
+            "",
+            f"⚪ Stale (no update for 2+ weeks) ({len(stale_tasks)}):",
+            _format_tasks(stale_tasks, max_items=5),
+        ]
+
+        return "\n".join(parts)
+
     async def run_proactive_check(self) -> None:
         """Called every hour 9am-11pm. Agent queries Notion and decides what to say."""
         logger.info("Running proactive check")
 
+        workspace_summary = await self._fetch_workspace_summary()
+
+        prompt_parts = ["Do an hourly check-in."]
+        if workspace_summary:
+            prompt_parts.append(
+                "Here is the current workspace snapshot:\n\n"
+                + workspace_summary
+                + "\n\nBased on this data and the time of day, send ONE helpful message."
+            )
+        else:
+            prompt_parts.append(
+                "Look at the current task state and send something helpful."
+            )
+
         messages = [
             {
                 "role": "user",
-                "content": (
-                    "Do an hourly check-in. Look at the current task state and "
-                    "send something helpful."
-                ),
+                "content": "\n".join(prompt_parts),
             }
         ]
 
