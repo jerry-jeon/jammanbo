@@ -11,8 +11,6 @@ class TaskType(str, Enum):
     TASK = "task"
     MEMO = "memo"
     IDEA = "idea"
-    ACTION = "action"
-    QUERY = "query"
 
 
 class Status(str, Enum):
@@ -50,21 +48,6 @@ ALLOWED_PRODUCTS = ["UIKit", "SBM", "AI"]
 
 
 ALL_STATUSES = ["TODO", "To Schedule", "In progress", "Done", "Won't do", "Pending"]
-
-
-class TaskAction(BaseModel):
-    """Output model when user wants to modify existing tasks."""
-
-    type: TaskType = TaskType.ACTION
-    search_query: str = Field(..., description="Keywords to search for in task titles")
-    new_status: Optional[str] = Field(None, description="Target status to set")
-
-
-class TaskQuery(BaseModel):
-    """Output model when user wants to search/look up existing tasks."""
-
-    type: TaskType = TaskType.QUERY
-    search_query: str = Field(..., description="Keywords to search for in task titles")
 
 
 class ClassifiedTask(BaseModel):

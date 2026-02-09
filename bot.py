@@ -1,10 +1,14 @@
-import os
+import json
 import logging
+import os
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -14,13 +18,10 @@ from telegram.ext import (
     filters,
 )
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-from classifier import Classifier
+from agent import Agent, AgentResponse, get_conversation_messages, save_conversation_turn
 from cleanup import CleanupManager
-from models import ClassifiedTask, TaskAction, TaskQuery, TaskType
-from notion_service import NotionTaskCreator, _get_title, _get_status, _get_action_date
-from scanner import DailyScanner
+from notion_service import NotionTaskCreator
+from scanner import ProactiveManager
 
 load_dotenv()
 
@@ -35,253 +36,147 @@ TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 NOTION_API_KEY = os.environ["NOTION_API_KEY"]
 
-classifier = Classifier(api_key=ANTHROPIC_API_KEY)
-notion_creator = NotionTaskCreator(api_key=NOTION_API_KEY)
+KST = ZoneInfo("Asia/Seoul")
+STATE_DIR = Path(os.environ.get("STATE_DIR", "."))
+STATE_FILE = STATE_DIR / "state.json"
 
-# Phase 2 & 3 modules — initialized in main() after app is built
-daily_scanner: DailyScanner | None = None
+notion_creator = NotionTaskCreator(api_key=NOTION_API_KEY)
+agent = Agent(api_key=ANTHROPIC_API_KEY, notion=notion_creator)
+
+# Phase 2 & 3 modules — initialized in post_init() after app is built
+proactive_manager: ProactiveManager | None = None
 cleanup_manager: CleanupManager | None = None
 
-# Pending clarifications: chat_id → {original_message, task}
-_pending_clarifications: dict[int, dict] = {}
+# Pending action store for inline buttons: short key → {page_id, new_status, title}
+_pending_actions: dict[str, dict] = {}
+_action_counter = 0
 
 
-def _format_confirmation(task: ClassifiedTask) -> str:
-    """Format a human-readable confirmation message."""
-    parts = [f"✅ Task created: '{task.name}'"]
+# ── State helpers ────────────────────────────────────────────────
 
-    if task.action_date:
-        parts.append(f"📅 Due: {task.action_date.isoformat()}")
-    if task.urgency:
-        parts.append(f"🔥 Urgency: {task.urgency.value}")
-    if task.importance:
-        parts.append(f"⭐ Importance: {task.importance.value}")
-    if task.product:
-        parts.append(f"📦 Product: {', '.join(task.product)}")
-    if task.tags:
-        parts.append(f"🏷️ Tags: {', '.join(task.tags)}")
+def _load_state() -> dict:
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text())
+    return {}
 
-    return "\n".join(parts)
 
+def _save_state(state: dict) -> None:
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _update_last_interaction() -> None:
+    """Track user interaction time for proactive message read-detection."""
+    state = _load_state()
+    state["last_user_interaction_time"] = datetime.now(KST).isoformat()
+    _save_state(state)
+
+
+# ── Commands ─────────────────────────────────────────────────────
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
     await update.message.reply_text(
         "🐻 Jammanbo bot here!\n"
-        "Send a message and I'll auto-create a Notion task.\n"
-        "Daily summary at 09:00 KST."
+        "Send a message and I'll help manage your Notion tasks.\n"
+        "Hourly check-ins from 9am to 11pm KST."
     )
 
 
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manual trigger for proactive check + cleanup."""
+    if update.effective_chat.id != TELEGRAM_CHAT_ID:
+        return
+    await update.message.reply_text("🔄 Running manual scan...")
+    await scheduled_daily_job()
+
+
+# ── Main message handler ────────────────────────────────────────
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Authorization: only respond to the owner
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
 
-    message_text = update.message.text
-    if not message_text:
+    text = update.message.text
+    if not text:
         return
 
-    # Step 0: Check if this is a reply to a clarification question
-    chat_id = update.effective_chat.id
-    pending = _pending_clarifications.pop(chat_id, None)
-    if pending:
-        combined = f"{pending['original_message']} — {message_text}"
-        task = pending["task"]
-        task.name = f"{task.name} — {message_text}"
-        task.follow_up = None  # Don't ask again
-        try:
-            await notion_creator.create_task(task)
-            reply = _format_confirmation(task)
-            related = await _find_related_tasks(task)
-            if related:
-                reply += related
-            await update.message.reply_text(reply)
-        except Exception as e:
-            logger.error("Notion API failed: %s", e)
-            await update.message.reply_text(
-                f"❌ Notion save failed: {str(e)[:100]}"
-            )
-        return
+    _update_last_interaction()
 
-    # Step 1: Classify with Claude
-    result: ClassifiedTask | TaskAction | TaskQuery | None = None
-    classification_failed = False
+    await context.bot.send_chat_action(chat_id=TELEGRAM_CHAT_ID, action="typing")
+
+    messages = get_conversation_messages(TELEGRAM_CHAT_ID, text)
+
     try:
-        result = await classifier.classify(message_text)
-        logger.info("Classified as: type=%s", result.type.value)
-    except Exception as e:
-        logger.error("Classification failed: %s", e)
-        classification_failed = True
-
-    # Step 2: Handle query — search and display results
-    if isinstance(result, TaskQuery):
-        await _handle_query(update, result)
-        return
-
-    # Step 3: Handle action — search and update existing tasks
-    if isinstance(result, TaskAction):
-        await _handle_action(update, result)
-        return
-
-    # Step 4: Handle memo — acknowledge only, don't save to Notion
-    if result and result.type == TaskType.MEMO:
-        await update.message.reply_text(f"📝 Noted as memo: '{result.name}'")
-        return
-
-    # Step 5: Handle follow_up — ask clarifying question before creating
-    if result and result.follow_up:
-        _pending_clarifications[update.effective_chat.id] = {
-            "original_message": message_text,
-            "task": result,
-        }
-        await update.message.reply_text(
-            f"❓ *{result.name}*\n{result.follow_up}",
-            parse_mode="Markdown",
-        )
-        return
-
-    # Step 6: Create in Notion
-    try:
-        if classification_failed:
-            await notion_creator.create_raw_task(message_text)
-            await update.message.reply_text(
-                "⚠️ Auto-classification failed. Task created with raw message.\n"
-                "Please organize it in Notion."
-            )
-        else:
-            await notion_creator.create_task(result)
-            reply = _format_confirmation(result)
-            # Search for related active tasks
-            related = await _find_related_tasks(result)
-            if related:
-                reply += related
-            await update.message.reply_text(reply)
-    except Exception as e:
-        logger.error("Notion API failed: %s", e)
-        await update.message.reply_text(
-            f"❌ Notion save failed: {str(e)[:100]}\n"
-            "Please try again later."
-        )
-
-
-async def _find_related_tasks(task: ClassifiedTask) -> str:
-    """Search for related active tasks and format as a hint."""
-    if not task.search_hint:
-        return ""
-    try:
-        pages = await notion_creator.search_tasks_by_title(
-            task.search_hint, active_only=True
-        )
-        # Filter out the task we just created (by exact title match)
-        pages = [p for p in pages if _get_title(p) != task.name]
-        if not pages:
-            return ""
-        lines = ["\n\n📎 *Related active tasks:*"]
-        for page in pages[:5]:
-            title = _get_title(page)
-            status = _get_status(page)
-            lines.append(f"  • {title}  \\[{status}]")
-        return "\n".join(lines)
+        result = await agent.run(messages, mode="chat")
     except Exception:
-        logger.exception("Failed to search related tasks")
-        return ""
-
-
-async def _handle_query(update: Update, query: TaskQuery) -> None:
-    """Search Notion and display results (read-only)."""
-    try:
-        pages = await notion_creator.search_tasks_by_title(
-            query.search_query, active_only=False
-        )
-    except Exception as e:
-        logger.error("Notion search failed: %s", e)
-        await update.message.reply_text(f"❌ Search failed: {str(e)[:100]}")
+        logger.exception("Agent run failed")
+        try:
+            await notion_creator.create_raw_task(text)
+            await update.message.reply_text(
+                "⚠️ Agent failed. Task created with raw message."
+            )
+        except Exception:
+            logger.exception("Raw task creation also failed")
+            await update.message.reply_text("❌ Something went wrong. Please try again.")
         return
 
-    if not pages:
-        await update.message.reply_text(
-            f"🔍 No tasks found matching '{query.search_query}'."
-        )
-        return
+    save_conversation_turn(TELEGRAM_CHAT_ID, text, result.text or "")
 
-    lines = [f"🔍 *{len(pages)} task(s) matching '{query.search_query}':*\n"]
-    for i, page in enumerate(pages[:15], 1):
-        title = _get_title(page)
-        status = _get_status(page)
-        date = _get_action_date(page)
-        date_str = f" | {date}" if date else ""
-        lines.append(f"{i}. {title}  \\[{status}]{date_str}")
-
-    if len(pages) > 15:
-        lines.append(f"\n… and {len(pages) - 15} more")
-
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        text = text[:3997] + "…"
-
-    await update.message.reply_text(text, parse_mode="Markdown")
+    if result.confirmation_request:
+        await _render_confirmation_buttons(update, result)
+    elif result.text:
+        # Truncate if too long for Telegram
+        reply_text = result.text
+        if len(reply_text) > 4000:
+            reply_text = reply_text[:3997] + "…"
+        await update.message.reply_text(reply_text, parse_mode="Markdown")
 
 
-# Pending action store: short key → {page_id, new_status}
-_pending_actions: dict[str, dict] = {}
-_action_counter = 0
-
-
-async def _handle_action(update: Update, action: TaskAction) -> None:
-    """Search Notion for matching tasks, send each as individual card."""
+async def _render_confirmation_buttons(update: Update, result: AgentResponse) -> None:
+    """Render inline keyboard buttons for task status confirmation."""
     global _action_counter
 
-    try:
-        pages = await notion_creator.search_tasks_by_title(action.search_query)
-    except Exception as e:
-        logger.error("Notion search failed: %s", e)
-        await update.message.reply_text(
-            f"❌ Search failed: {str(e)[:100]}"
-        )
-        return
+    req = result.confirmation_request
+    tasks = req.get("tasks", [])
+    new_status = req.get("new_status", "Done")
+    header = req.get("header_message", "")
 
-    if not pages:
-        await update.message.reply_text(
-            f"🔍 No active tasks found matching '{action.search_query}'."
-        )
-        return
+    if header:
+        await update.message.reply_text(header)
 
-    status_label = f" → {action.new_status}" if action.new_status else ""
-    await update.message.reply_text(
-        f"🔍 Found {len(pages)} task(s) matching '{action.search_query}'{status_label}:"
-    )
-
-    # Send each match as its own message with per-task buttons
-    for page in pages[:10]:
-        page_id = page["id"]
-        title = _get_title(page)
-        status = _get_status(page)
-
+    for task_info in tasks[:10]:
         _action_counter += 1
         key = str(_action_counter)
         _pending_actions[key] = {
-            "page_id": page_id,
-            "new_status": action.new_status,
-            "title": title,
+            "page_id": task_info["page_id"],
+            "new_status": new_status,
+            "title": task_info["title"],
         }
 
-        text = f"*{title}*\nStatus: {status}"
+        text = f"*{task_info['title']}*\nStatus: {task_info.get('current_status', '?')}"
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    f"{action.new_status} ✓" if action.new_status else "Update ✓",
+                    f"{new_status} ✓",
                     callback_data=f"action_yes:{key}",
                 ),
                 InlineKeyboardButton("Skip", callback_data=f"action_no:{key}"),
             ]
         ])
-
         await update.message.reply_text(
             text, parse_mode="Markdown", reply_markup=keyboard
         )
 
+    # Also send the agent's text response if present
+    if result.text:
+        reply_text = result.text
+        if len(reply_text) > 4000:
+            reply_text = reply_text[:3997] + "…"
+        await update.message.reply_text(reply_text, parse_mode="Markdown")
+
+
+# ── Inline button callbacks ─────────────────────────────────────
 
 async def handle_action_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -289,6 +184,8 @@ async def handle_action_callback(
     """Handle per-task action button presses."""
     query = update.callback_query
     await query.answer()
+
+    _update_last_interaction()
 
     data = query.data
     if ":" not in data:
@@ -322,52 +219,68 @@ async def handle_action_callback(
         await query.edit_message_text(f"❌ Failed to update: {title}")
 
 
-async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Debug command to manually trigger the daily job."""
-    if update.effective_chat.id != TELEGRAM_CHAT_ID:
-        return
-    await update.message.reply_text("🔄 Running manual scan...")
-    await scheduled_daily_job()
-
-
 async def handle_cleanup_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Route cleanup inline button presses."""
+    _update_last_interaction()
     if cleanup_manager:
         await cleanup_manager.handle_callback(update, context)
 
 
+# ── Scheduled jobs ───────────────────────────────────────────────
+
 async def scheduled_daily_job() -> None:
-    """Runs scanner then cleanup sequentially."""
+    """Runs proactive check then cleanup sequentially."""
     logger.info("Starting scheduled daily job")
-    if daily_scanner:
-        await daily_scanner.run_daily_scan()
+    if proactive_manager:
+        await proactive_manager.run_proactive_check()
     if cleanup_manager:
         await cleanup_manager.run_daily_cleanup()
     logger.info("Finished scheduled daily job")
 
 
+async def scheduled_hourly_proactive() -> None:
+    """Hourly proactive check (non-cleanup hours)."""
+    logger.info("Starting hourly proactive check")
+    if proactive_manager:
+        await proactive_manager.run_proactive_check()
+    logger.info("Finished hourly proactive check")
+
+
+# ── App lifecycle ────────────────────────────────────────────────
+
 async def post_init(application: Application) -> None:
     """Called after the event loop is running — safe to start AsyncIOScheduler."""
-    global daily_scanner, cleanup_manager
+    global proactive_manager, cleanup_manager
 
-    daily_scanner = DailyScanner(
-        bot=application.bot, chat_id=TELEGRAM_CHAT_ID, notion=notion_creator
+    proactive_manager = ProactiveManager(
+        bot=application.bot, chat_id=TELEGRAM_CHAT_ID, agent=agent
     )
     cleanup_manager = CleanupManager(
         bot=application.bot, chat_id=TELEGRAM_CHAT_ID, notion=notion_creator
     )
 
     scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
+
+    # Daily at 09:00: proactive check + cleanup
     scheduler.add_job(
         scheduled_daily_job,
         trigger=CronTrigger(hour=9, minute=0, timezone="Asia/Seoul"),
         id="daily_scan",
         replace_existing=True,
     )
+
+    # Hourly proactive check 10am-11pm (9am handled by daily job)
+    scheduler.add_job(
+        scheduled_hourly_proactive,
+        trigger=CronTrigger(hour="10-23", minute=0, timezone="Asia/Seoul"),
+        id="hourly_proactive",
+        replace_existing=True,
+    )
+
     scheduler.start()
-    logger.info("APScheduler started — daily job at 09:00 KST")
+    logger.info("APScheduler started — daily job at 09:00, hourly proactive 10:00-23:00 KST")
 
 
 def main():
@@ -378,7 +291,6 @@ def main():
         .build()
     )
 
-    # Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(
