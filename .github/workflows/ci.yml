@@ -17,7 +17,7 @@ jobs:
       - run: uv run python -m py_compile scanner.py
       - run: uv run python -m py_compile cleanup.py
       - run: uv run python -m py_compile notion_service.py
-      - run: uv run python -m py_compile classifier.py
+      - run: uv run python -m py_compile agent.py
       - run: uv run python -m py_compile models.py
 
   claude-review:
