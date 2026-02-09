@@ -268,3 +268,32 @@ class NotionTaskCreator:
     async def get_page(self, page_id: str) -> dict:
         """Fetch a single page by ID."""
         return await self.client.pages.retrieve(page_id=page_id)
+
+    async def get_page_content(self, page_id: str) -> str:
+        """Fetch the body content (blocks) of a Notion page as plain text."""
+        blocks = []
+        has_more = True
+        start_cursor = None
+
+        while has_more:
+            kwargs: dict = {"block_id": page_id, "page_size": 100}
+            if start_cursor:
+                kwargs["start_cursor"] = start_cursor
+            response = await self.client.blocks.children.list(**kwargs)
+            blocks.extend(response["results"])
+            has_more = response.get("has_more", False)
+            start_cursor = response.get("next_cursor")
+
+        if not blocks:
+            return ""
+
+        text_parts = []
+        for block in blocks:
+            block_type = block.get("type", "")
+            block_data = block.get(block_type, {})
+            rich_text = block_data.get("rich_text", [])
+            text = "".join(rt.get("plain_text", "") for rt in rich_text)
+            if text:
+                text_parts.append(text)
+
+        return "\n".join(text_parts)

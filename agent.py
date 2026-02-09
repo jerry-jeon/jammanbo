@@ -107,6 +107,24 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_task_detail",
+        "description": (
+            "Get full details and body content of a specific task by page ID. "
+            "Use this when the user wants to know what's inside a task — "
+            "its properties and body/description content."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "page_id": {
+                    "type": "string",
+                    "description": "Notion page ID of the task",
+                },
+            },
+            "required": ["page_id"],
+        },
+    },
+    {
         "name": "request_user_confirmation",
         "description": (
             "Present tasks with inline buttons for the user to confirm a status change. "
@@ -151,6 +169,7 @@ You help manage tasks in a Notion database via Telegram.
 ## Your capabilities
 - Create tasks when the user describes work to do, ideas, or actionable items
 - Search existing tasks when the user asks about them
+- View task details and body content when the user asks what's inside a task (search first, then get_task_detail)
 - Update task status when asked (always confirm with the user first via request_user_confirmation)
 - Acknowledge memos/emotions warmly without creating tasks
 - Ask clarifying questions when a message is too vague to create a useful task
@@ -325,6 +344,8 @@ class Agent:
                 return await self._tool_search_tasks(input_data)
             elif name == "update_task_status":
                 return await self._tool_update_task_status(input_data)
+            elif name == "get_task_detail":
+                return await self._tool_get_task_detail(input_data)
             elif name == "request_user_confirmation":
                 return {"status": "confirmation_sent"}
             else:
@@ -377,6 +398,35 @@ class Agent:
         new_status = input_data["new_status"]
         await self.notion.update_task_status(page_id, new_status)
         return {"success": True, "page_id": page_id}
+
+    async def _tool_get_task_detail(self, input_data: dict) -> dict:
+        """Get full task details including body content."""
+        page_id = input_data["page_id"]
+        page = await self.notion.get_page(page_id)
+        content = await self.notion.get_page_content(page_id)
+
+        props = page.get("properties", {})
+
+        def _get_select(name: str) -> str | None:
+            sel = props.get(name, {}).get("select")
+            return sel["name"] if sel else None
+
+        def _get_multi_select(name: str) -> list[str]:
+            return [s["name"] for s in props.get(name, {}).get("multi_select", [])]
+
+        return {
+            "page_id": page_id,
+            "title": _get_title(page),
+            "status": _get_status(page),
+            "action_date": _get_action_date(page) or None,
+            "importance": _get_select("Importance"),
+            "urgency": _get_select("Urgency"),
+            "category": _get_select("Category"),
+            "tags": _get_multi_select("Tags"),
+            "product": _get_multi_select("Product"),
+            "link": props.get("Link", {}).get("url"),
+            "body_content": content if content else "(본문 없음)",
+        }
 
     def _build_system_prompt(self, mode: str = "chat") -> str:
         now = datetime.now(KST)
