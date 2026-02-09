@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 
 from telegram import Bot
 
+from agent import save_conversation_turn
+
 logger = logging.getLogger(__name__)
 
 KST = ZoneInfo("Asia/Seoul")
@@ -92,6 +94,10 @@ class ProactiveManager:
 
         state["proactive_message_time"] = datetime.now(KST).isoformat()
         _save_state(state)
+
+        # Save to conversation history so the agent has context when user replies
+        save_conversation_turn(self.chat_id, "[hourly check-in]", result.text)
+
         logger.info("Proactive check: message sent/edited")
 
     def _has_user_read(self, state: dict) -> bool:
