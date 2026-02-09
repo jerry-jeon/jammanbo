@@ -13,12 +13,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
       - run: uv sync --frozen
-      - run: uv run python -m py_compile bot.py
-      - run: uv run python -m py_compile scanner.py
-      - run: uv run python -m py_compile cleanup.py
-      - run: uv run python -m py_compile notion_service.py
-      - run: uv run python -m py_compile classifier.py
-      - run: uv run python -m py_compile models.py
+      - name: Syntax-check all Python files
+        run: |
+          find . -maxdepth 1 -name '*.py' -print0 | xargs -0 -n1 uv run python -m py_compile
 
   claude-review:
     if: github.event_name == 'pull_request'
