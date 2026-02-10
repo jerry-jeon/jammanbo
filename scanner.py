@@ -80,6 +80,7 @@ class ProactiveManager:
 
         parts = [
             "## Current workspace snapshot (live from Notion)",
+            "(본문 내용 미포함 — 내용 확인 필요 시 get_task_detail 호출 필요)",
             "",
             f"📊 Active tasks: {in_progress} in progress, {todo} TODO",
             "",

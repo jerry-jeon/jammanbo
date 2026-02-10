@@ -343,6 +343,7 @@ class NotionTaskCreator:
             return ""
 
         text_parts = []
+        non_text_block_types: list[str] = []
         for block in blocks:
             block_type = block.get("type", "")
             block_data = block.get(block_type, {})
@@ -350,8 +351,21 @@ class NotionTaskCreator:
             text = "".join(rt.get("plain_text", "") for rt in rich_text)
             if text:
                 text_parts.append(text)
+            elif block_type in (
+                "image", "video", "file", "pdf", "bookmark",
+                "embed", "child_page", "child_database", "table",
+                "column_list",
+            ):
+                non_text_block_types.append(block_type)
 
-        return "\n".join(text_parts)
+        content = "\n".join(text_parts)
+        if not content and non_text_block_types:
+            types_summary = ", ".join(sorted(set(non_text_block_types)))
+            return (
+                f"(텍스트 없음 — {types_summary} 등 "
+                f"비텍스트 블록 {len(non_text_block_types)}개 포함)"
+            )
+        return content
 
     async def fetch_pages_with_content(
         self, pages: list[dict], max_pages: int = 10
@@ -372,7 +386,7 @@ class NotionTaskCreator:
                 "title": _get_title(page),
                 "status": _get_status(page),
                 "action_date": _get_action_date(page) or None,
-                "body_content": content if content else "(본문 없음)",
+                "body_content": content if content else "(빈 페이지)",
             }
 
         tasks = [_fetch_one(p) for p in pages[:max_pages]]
