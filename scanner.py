@@ -72,7 +72,8 @@ class ProactiveManager:
                 title = _get_title(p)
                 status = _get_status(p)
                 date = _get_action_date(p) or "no date"
-                lines.append(f"  - {title} [{status}] (due: {date})")
+                page_id = p.get("id", "")
+                lines.append(f"  - {title} [{status}] (due: {date}) [id:{page_id}]")
             if len(pages) > max_items:
                 lines.append(f"  ... and {len(pages) - max_items} more")
             return "\n".join(lines)
@@ -171,8 +172,13 @@ class ProactiveManager:
         state["proactive_message_time"] = datetime.now(KST).isoformat()
         _save_state(state)
 
-        # Save to conversation history so the agent has context when user replies
-        save_conversation_turn(self.chat_id, "[hourly check-in]", result.text)
+        # Save to conversation history so the agent has context when user replies.
+        # Include the workspace snapshot so the chat agent can reference
+        # task names and page IDs from the check-in.
+        history_user_msg = "[hourly check-in]"
+        if workspace_summary:
+            history_user_msg += "\n\n" + workspace_summary
+        save_conversation_turn(self.chat_id, history_user_msg, result.text)
 
         logger.info("Proactive check: message sent/edited")
 
