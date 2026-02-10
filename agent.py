@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from anthropic import AsyncAnthropic
 
+from interaction_logger import InteractionLog
 from models import ClassifiedTask, Status, ALLOWED_TAGS, ALLOWED_PRODUCTS, ALL_STATUSES
 from notion_service import NotionTaskCreator, _get_title, _get_status, _get_action_date
 
@@ -304,7 +305,12 @@ class Agent:
         self.client = AsyncAnthropic(api_key=api_key)
         self.notion = notion
 
-    async def run(self, messages: list[dict], mode: str = "chat") -> AgentResponse:
+    async def run(
+        self,
+        messages: list[dict],
+        mode: str = "chat",
+        interaction_log: InteractionLog | None = None,
+    ) -> AgentResponse:
         """Run the agentic loop. mode: 'chat' or 'proactive'."""
         system_prompt = self._build_system_prompt(mode)
         max_iterations = 5
@@ -342,6 +348,8 @@ class Agent:
             tool_results = []
             for block in tool_use_blocks:
                 result = await self._execute_tool(block.name, block.input)
+                if interaction_log:
+                    interaction_log.add_step(block.name, block.input, result)
                 if block.name == "request_user_confirmation":
                     confirmation_request = block.input
                 tool_results.append({
