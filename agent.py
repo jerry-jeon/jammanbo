@@ -239,6 +239,13 @@ If the task might overlap with existing work, call search_tasks to find related 
 - If body_content shows "(빈 페이지)", the page truly has no content blocks.
 - When evaluating, reviewing, or discussing a task's content (e.g., ambiguous tasks, cleanup, asking "what's in this task"), proactively call get_task_detail FIRST before responding — don't wait for the user to ask.
 
+## Page ID usage (IMPORTANT)
+- Conversation history may contain workspace snapshots with page IDs in [id:PAGE_ID] format.
+- When referencing a task from prior conversation context, ALWAYS look for its page ID first.
+- Prefer get_task_detail(page_id) over search_tasks(title) when a page ID is available — title search can miss due to formatting differences.
+- If search_tasks returns 0 results for a task you know exists, check conversation history for its page ID and try get_task_detail instead.
+- NEVER say a page "cannot be found" without first trying get_task_detail with its page ID from conversation context.
+
 ## Response style
 - Reply in the same language the user uses
 - Keep responses concise — this is Telegram
@@ -259,6 +266,13 @@ get_task_detail before discussing them with the user.
 
 You may also use Notion tools (search_tasks, get_task_detail) if you need more detail
 on a specific task from the snapshot.
+
+## Page ID preservation (CRITICAL)
+When mentioning a specific task in your response, ALWAYS include its page ID in the format
+[id:PAGE_ID] right after the task name. This is essential because when the user replies
+to your message, the follow-up chat agent needs the page ID to look up the task directly.
+Without it, title-based search may fail.
+Example: "Coupang eats" [id:abc123-def456] (TODO, 2/10 마감)
 
 Based on the snapshot and the time of day, send ONE helpful message. Examples:
 - Ask about progress on a specific in-progress task
@@ -436,8 +450,16 @@ class Agent:
 
     async def _tool_get_task_detail(self, input_data: dict) -> dict:
         """Get full task details including body content."""
+        from notion_client.errors import APIResponseError
+
         page_id = input_data["page_id"]
-        page = await self.notion.get_page(page_id)
+        try:
+            page = await self.notion.get_page(page_id)
+        except APIResponseError as e:
+            if e.status == 404:
+                return {"error": "page_not_found", "page_id": page_id,
+                        "message": "이 페이지가 삭제되었거나 존재하지 않습니다."}
+            raise
         content = await self.notion.get_page_content(page_id)
 
         props = page.get("properties", {})
