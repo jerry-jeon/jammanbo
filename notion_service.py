@@ -1,11 +1,41 @@
 import asyncio
 import logging
+from typing import Callable, TypeVar
 
 from notion_client import AsyncClient
+from notion_client.errors import APIResponseError
 
 from models import ClassifiedTask
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+MAX_RETRIES = 3
+
+
+async def _retry_on_rate_limit(make_coro: Callable[[], T], max_retries: int = MAX_RETRIES) -> T:
+    """Await a coroutine with retry on Notion 429 rate limit.
+
+    ``make_coro`` must be a zero-arg callable that returns a new coroutine
+    each time (e.g. ``lambda: client.pages.create(...)``), because a coroutine
+    object can only be awaited once.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            return await make_coro()
+        except APIResponseError as e:
+            if e.status != 429 or attempt == max_retries:
+                raise
+            retry_after = e.headers.get("retry-after") if e.headers else None
+            wait = float(retry_after) if retry_after else 2 ** attempt
+            logger.warning(
+                "Notion rate limited (429), retrying in %.1fs (attempt %d/%d)",
+                wait,
+                attempt + 1,
+                max_retries,
+            )
+            await asyncio.sleep(wait)
 
 DATABASE_ID = "8c494555019043ebb83fe1afb5280467"
 DATA_SOURCE_ID = "eca92760-91c2-4dff-ae10-ff5a080e8df0"
@@ -48,9 +78,11 @@ class NotionTaskCreator:
     async def create_task(self, task: ClassifiedTask) -> dict:
         """Create a Notion page from a ClassifiedTask."""
         properties = self._build_properties(task)
-        page = await self.client.pages.create(
-            parent={"database_id": DATABASE_ID},
-            properties=properties,
+        page = await _retry_on_rate_limit(
+            lambda: self.client.pages.create(
+                parent={"database_id": DATABASE_ID},
+                properties=properties,
+            )
         )
         logger.info("Created Notion task: %s (id=%s)", task.name, page["id"])
         return page
@@ -62,9 +94,11 @@ class NotionTaskCreator:
             "Status": {"select": {"name": "TODO"}},
             "Source": {"select": {"name": SOURCE_VALUE}},
         }
-        page = await self.client.pages.create(
-            parent={"database_id": DATABASE_ID},
-            properties=properties,
+        page = await _retry_on_rate_limit(
+            lambda: self.client.pages.create(
+                parent={"database_id": DATABASE_ID},
+                properties=properties,
+            )
         )
         logger.info("Created raw Notion task (id=%s)", page["id"])
         return page
@@ -98,72 +132,80 @@ class NotionTaskCreator:
 
     async def query_overdue_tasks(self, today_iso: str) -> list[dict]:
         """Action Date < today, Status not Done/Won't do."""
-        response = await self.client.data_sources.query(
-            data_source_id=DATA_SOURCE_ID,
-            filter={
-                "and": [
-                    {"property": "Action Date", "date": {"before": today_iso}},
-                    {"property": "Status", "select": {"does_not_equal": "Done"}},
-                    {"property": "Status", "select": {"does_not_equal": "Won't do"}},
-                ]
-            },
-            sorts=[{"property": "Action Date", "direction": "ascending"}],
-            page_size=50,
+        response = await _retry_on_rate_limit(
+            lambda: self.client.data_sources.query(
+                data_source_id=DATA_SOURCE_ID,
+                filter={
+                    "and": [
+                        {"property": "Action Date", "date": {"before": today_iso}},
+                        {"property": "Status", "select": {"does_not_equal": "Done"}},
+                        {"property": "Status", "select": {"does_not_equal": "Won't do"}},
+                    ]
+                },
+                sorts=[{"property": "Action Date", "direction": "ascending"}],
+                page_size=50,
+            )
         )
         return response["results"]
 
     async def query_today_tasks(self, today_iso: str) -> list[dict]:
         """Action Date = today, active statuses."""
-        response = await self.client.data_sources.query(
-            data_source_id=DATA_SOURCE_ID,
-            filter={
-                "and": [
-                    {"property": "Action Date", "date": {"equals": today_iso}},
-                    {"property": "Status", "select": {"does_not_equal": "Done"}},
-                    {"property": "Status", "select": {"does_not_equal": "Won't do"}},
-                ]
-            },
-            sorts=[{"property": "Status", "direction": "ascending"}],
-            page_size=50,
+        response = await _retry_on_rate_limit(
+            lambda: self.client.data_sources.query(
+                data_source_id=DATA_SOURCE_ID,
+                filter={
+                    "and": [
+                        {"property": "Action Date", "date": {"equals": today_iso}},
+                        {"property": "Status", "select": {"does_not_equal": "Done"}},
+                        {"property": "Status", "select": {"does_not_equal": "Won't do"}},
+                    ]
+                },
+                sorts=[{"property": "Status", "direction": "ascending"}],
+                page_size=50,
+            )
         )
         return response["results"]
 
     async def query_this_week_tasks(self, start_iso: str, end_iso: str) -> list[dict]:
         """Action Date between start (exclusive today) and end (Sunday)."""
-        response = await self.client.data_sources.query(
-            data_source_id=DATA_SOURCE_ID,
-            filter={
-                "and": [
-                    {"property": "Action Date", "date": {"after": start_iso}},
-                    {"property": "Action Date", "date": {"on_or_before": end_iso}},
-                    {"property": "Status", "select": {"does_not_equal": "Done"}},
-                    {"property": "Status", "select": {"does_not_equal": "Won't do"}},
-                ]
-            },
-            sorts=[{"property": "Action Date", "direction": "ascending"}],
-            page_size=50,
+        response = await _retry_on_rate_limit(
+            lambda: self.client.data_sources.query(
+                data_source_id=DATA_SOURCE_ID,
+                filter={
+                    "and": [
+                        {"property": "Action Date", "date": {"after": start_iso}},
+                        {"property": "Action Date", "date": {"on_or_before": end_iso}},
+                        {"property": "Status", "select": {"does_not_equal": "Done"}},
+                        {"property": "Status", "select": {"does_not_equal": "Won't do"}},
+                    ]
+                },
+                sorts=[{"property": "Action Date", "direction": "ascending"}],
+                page_size=50,
+            )
         )
         return response["results"]
 
     async def query_stale_tasks(self, cutoff_iso: str) -> list[dict]:
         """Last edited > 2 weeks ago, Status = TODO or In progress."""
-        response = await self.client.data_sources.query(
-            data_source_id=DATA_SOURCE_ID,
-            filter={
-                "and": [
-                    {"property": "Status", "select": {"does_not_equal": "Done"}},
-                    {"property": "Status", "select": {"does_not_equal": "Won't do"}},
-                    {"property": "Status", "select": {"does_not_equal": "To Schedule"}},
-                    {
-                        "timestamp": "last_edited_time",
-                        "last_edited_time": {"before": cutoff_iso},
-                    },
-                ]
-            },
-            sorts=[
-                {"timestamp": "last_edited_time", "direction": "ascending"}
-            ],
-            page_size=50,
+        response = await _retry_on_rate_limit(
+            lambda: self.client.data_sources.query(
+                data_source_id=DATA_SOURCE_ID,
+                filter={
+                    "and": [
+                        {"property": "Status", "select": {"does_not_equal": "Done"}},
+                        {"property": "Status", "select": {"does_not_equal": "Won't do"}},
+                        {"property": "Status", "select": {"does_not_equal": "To Schedule"}},
+                        {
+                            "timestamp": "last_edited_time",
+                            "last_edited_time": {"before": cutoff_iso},
+                        },
+                    ]
+                },
+                sorts=[
+                    {"timestamp": "last_edited_time", "direction": "ascending"}
+                ],
+                page_size=50,
+            )
         )
         return response["results"]
 
@@ -186,7 +228,9 @@ class NotionTaskCreator:
                 }
                 if start_cursor:
                     kwargs["start_cursor"] = start_cursor
-                response = await self.client.data_sources.query(**kwargs)
+                response = await _retry_on_rate_limit(
+                    lambda: self.client.data_sources.query(**kwargs)
+                )
                 count = len(response["results"])
                 if status_name == "In progress":
                     in_progress += count
@@ -227,7 +271,9 @@ class NotionTaskCreator:
             }
             if start_cursor:
                 kwargs["start_cursor"] = start_cursor
-            response = await self.client.data_sources.query(**kwargs)
+            response = await _retry_on_rate_limit(
+                lambda: self.client.data_sources.query(**kwargs)
+            )
             results.extend(response["results"])
             has_more = response.get("has_more", False)
             start_cursor = response.get("next_cursor")
@@ -236,9 +282,11 @@ class NotionTaskCreator:
 
     async def update_task_status(self, page_id: str, new_status: str) -> dict:
         """Update a task's status (e.g., to 'Won't do')."""
-        page = await self.client.pages.update(
-            page_id=page_id,
-            properties={"Status": {"select": {"name": new_status}}},
+        page = await _retry_on_rate_limit(
+            lambda: self.client.pages.update(
+                page_id=page_id,
+                properties={"Status": {"select": {"name": new_status}}},
+            )
         )
         logger.info("Updated task %s status to '%s'", page_id, new_status)
         return page
@@ -258,17 +306,21 @@ class NotionTaskCreator:
         else:
             filter_obj = {"property": "Name", "title": {"contains": query}}
 
-        response = await self.client.data_sources.query(
-            data_source_id=DATA_SOURCE_ID,
-            filter=filter_obj,
-            sorts=[{"timestamp": "last_edited_time", "direction": "descending"}],
-            page_size=20,
+        response = await _retry_on_rate_limit(
+            lambda: self.client.data_sources.query(
+                data_source_id=DATA_SOURCE_ID,
+                filter=filter_obj,
+                sorts=[{"timestamp": "last_edited_time", "direction": "descending"}],
+                page_size=20,
+            )
         )
         return response["results"]
 
     async def get_page(self, page_id: str) -> dict:
         """Fetch a single page by ID."""
-        return await self.client.pages.retrieve(page_id=page_id)
+        return await _retry_on_rate_limit(
+            lambda: self.client.pages.retrieve(page_id=page_id)
+        )
 
     async def get_page_content(self, page_id: str) -> str:
         """Fetch the body content (blocks) of a Notion page as plain text."""
@@ -280,7 +332,9 @@ class NotionTaskCreator:
             kwargs: dict = {"block_id": page_id, "page_size": 100}
             if start_cursor:
                 kwargs["start_cursor"] = start_cursor
-            response = await self.client.blocks.children.list(**kwargs)
+            response = await _retry_on_rate_limit(
+                lambda: self.client.blocks.children.list(**kwargs)
+            )
             blocks.extend(response["results"])
             has_more = response.get("has_more", False)
             start_cursor = response.get("next_cursor")
