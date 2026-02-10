@@ -20,6 +20,7 @@ from telegram.ext import (
 
 from agent import Agent, AgentResponse, get_conversation_messages, save_conversation_turn
 from cleanup import CleanupManager
+from interaction_logger import InteractionLog
 from notion_service import NotionTaskCreator
 from scanner import ProactiveManager
 
@@ -106,11 +107,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await context.bot.send_chat_action(chat_id=TELEGRAM_CHAT_ID, action="typing")
 
     messages = get_conversation_messages(TELEGRAM_CHAT_ID, text)
+    ilog = InteractionLog(user_message=text, mode="chat")
 
     try:
-        result = await agent.run(messages, mode="chat")
+        result = await agent.run(messages, mode="chat", interaction_log=ilog)
     except Exception:
         logger.exception("Agent run failed")
+        ilog.finalize(response_text="", response_sent=False, error=f"agent.run failed: {logger.name}")
         try:
             await notion_creator.create_raw_task(text)
             await update.message.reply_text(
@@ -123,14 +126,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     save_conversation_turn(TELEGRAM_CHAT_ID, text, result.text or "")
 
-    if result.confirmation_request:
-        await _render_confirmation_buttons(update, result)
-    elif result.text:
-        # Truncate if too long for Telegram
-        reply_text = result.text
-        if len(reply_text) > 4000:
-            reply_text = reply_text[:3997] + "…"
+    response_sent = False
+    send_error = None
+    try:
+        if result.confirmation_request:
+            await _render_confirmation_buttons(update, result)
+            response_sent = True
+        elif result.text:
+            await _safe_reply(update, result.text)
+            response_sent = True
+    except Exception as e:
+        logger.exception("Failed to send reply to Telegram")
+        send_error = str(e)
+
+    ilog.finalize(
+        response_text=result.text or "",
+        response_sent=response_sent,
+        error=send_error,
+    )
+
+
+async def _safe_reply(update: Update, text: str) -> None:
+    """Send a reply with Markdown, falling back to plain text on parse failure."""
+    reply_text = text
+    if len(reply_text) > 4000:
+        reply_text = reply_text[:3997] + "…"
+    try:
         await update.message.reply_text(reply_text, parse_mode="Markdown")
+    except Exception:
+        logger.warning("Markdown parse failed, falling back to plain text")
+        await update.message.reply_text(reply_text)
 
 
 async def _render_confirmation_buttons(update: Update, result: AgentResponse) -> None:
@@ -170,10 +195,7 @@ async def _render_confirmation_buttons(update: Update, result: AgentResponse) ->
 
     # Also send the agent's text response if present
     if result.text:
-        reply_text = result.text
-        if len(reply_text) > 4000:
-            reply_text = reply_text[:3997] + "…"
-        await update.message.reply_text(reply_text, parse_mode="Markdown")
+        await _safe_reply(update, result.text)
 
 
 # ── Inline button callbacks ─────────────────────────────────────
