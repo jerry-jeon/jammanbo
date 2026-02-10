@@ -233,6 +233,12 @@ Clear examples that DON'T need clarification: "PR #142 리뷰", "UIKit 릴리즈
 ## After creating a task
 If the task might overlap with existing work, call search_tasks to find related active tasks and mention them in your response.
 
+## Content fetching rules
+- Task lists and workspace snapshots only include metadata (title, status, date) — NOT body content.
+- NEVER claim a page is empty or has no content unless you have actually fetched it via get_task_detail or search_tasks (which includes body_content in results).
+- If body_content shows "(빈 페이지)", the page truly has no content blocks.
+- When evaluating, reviewing, or discussing a task's content (e.g., ambiguous tasks, cleanup, asking "what's in this task"), proactively call get_task_detail FIRST before responding — don't wait for the user to ask.
+
 ## Response style
 - Reply in the same language the user uses
 - Keep responses concise — this is Telegram
@@ -244,6 +250,12 @@ PROACTIVE_PROMPT_SUFFIX = """
 You are doing an hourly check-in. The user message includes a live workspace snapshot
 with overdue tasks, today's tasks, this week's tasks, stale tasks, and active task counts
 fetched directly from Notion. Use this data as your primary source of truth.
+
+IMPORTANT: The workspace snapshot only includes metadata (title, status, date).
+It does NOT include page body content. Before claiming any task is empty, has no content,
+or is "title-only", you MUST call get_task_detail to verify.
+When you encounter ambiguous or unclear tasks, proactively fetch their content with
+get_task_detail before discussing them with the user.
 
 You may also use Notion tools (search_tasks, get_task_detail) if you need more detail
 on a specific task from the snapshot.
@@ -448,7 +460,7 @@ class Agent:
             "tags": _get_multi_select("Tags"),
             "product": _get_multi_select("Product"),
             "link": props.get("Link", {}).get("url"),
-            "body_content": content if content else "(본문 없음)",
+            "body_content": content if content else "(빈 페이지)",
         }
 
     def _build_system_prompt(self, mode: str = "chat") -> str:
