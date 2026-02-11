@@ -291,6 +291,46 @@ class NotionTaskCreator:
         logger.info("Updated task %s status to '%s'", page_id, new_status)
         return page
 
+    async def update_task(self, page_id: str, updates: dict) -> dict:
+        """Update arbitrary properties on a task.
+
+        Supported keys in *updates*: name, status, importance, urgency,
+        category, tags, product, action_date, link.
+        """
+        properties: dict = {}
+
+        if "name" in updates:
+            properties["Name"] = {"title": [{"text": {"content": updates["name"]}}]}
+        if "status" in updates:
+            properties["Status"] = {"select": {"name": updates["status"]}}
+        if "importance" in updates:
+            properties["Importance"] = {"select": {"name": updates["importance"]}}
+        if "urgency" in updates:
+            properties["Urgency"] = {"select": {"name": updates["urgency"]}}
+        if "category" in updates:
+            properties["Category"] = {"select": {"name": updates["category"]}}
+        if "tags" in updates:
+            properties["Tags"] = {"multi_select": [{"name": t} for t in updates["tags"]]}
+        if "product" in updates:
+            properties["Product"] = {"multi_select": [{"name": p} for p in updates["product"]]}
+        if "action_date" in updates:
+            properties["Action Date"] = {"date": {"start": updates["action_date"]}}
+        if "link" in updates:
+            properties["Link"] = {"url": updates["link"]}
+
+        if not properties:
+            raise ValueError("No valid update fields provided")
+
+        page = await _retry_on_rate_limit(
+            lambda: self.client.pages.update(
+                page_id=page_id,
+                properties=properties,
+            )
+        )
+        updated_fields = list(properties.keys())
+        logger.info("Updated task %s fields: %s", page_id, updated_fields)
+        return page
+
     async def search_tasks_by_title(
         self, query: str, active_only: bool = True
     ) -> list[dict]:
