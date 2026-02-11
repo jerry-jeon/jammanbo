@@ -190,6 +190,43 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "append_page_content",
+        "description": (
+            "Append text blocks (headings, paragraphs, dividers) to an existing Notion page body. "
+            "Use this to add notes, merge content from other pages, or build structured documents. "
+            "Call get_task_detail first to read source content, then append it to the target page."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "page_id": {
+                    "type": "string",
+                    "description": "Notion page ID to append content to",
+                },
+                "blocks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["heading_2", "heading_3", "paragraph", "divider"],
+                                "description": "Block type",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Text content (not needed for divider)",
+                            },
+                        },
+                        "required": ["type"],
+                    },
+                    "description": "Content blocks to append",
+                },
+            },
+            "required": ["page_id", "blocks"],
+        },
+    },
+    {
         "name": "request_user_confirmation",
         "description": (
             "Present tasks with inline buttons for the user to confirm a status change. "
@@ -237,6 +274,8 @@ You help manage tasks in a Notion database via Telegram.
 - View task details and body content when the user asks what's inside a task (search first, then get_task_detail)
 - Update task status when asked (always confirm with the user first via request_user_confirmation)
 - Update task properties (title, date, importance, urgency, category, tags, etc.) using update_task
+- Append content to a page body (headings, paragraphs, dividers) using append_page_content
+- Merge pages: read content from source pages (get_task_detail), append to a target page, then mark sources as Done
 - Acknowledge memos/emotions warmly without creating tasks
 - Ask clarifying questions when a message is too vague to create a useful task
 
@@ -470,6 +509,8 @@ class Agent:
                 return await self._tool_update_task(input_data)
             elif name == "get_task_detail":
                 return await self._tool_get_task_detail(input_data)
+            elif name == "append_page_content":
+                return await self._tool_append_page_content(input_data)
             elif name == "request_user_confirmation":
                 return {"status": "confirmation_sent"}
             else:
@@ -522,6 +563,13 @@ class Agent:
         updates = {k: v for k, v in input_data.items() if k != "page_id"}
         await self.notion.update_task(page_id, updates)
         return {"success": True, "page_id": page_id, "updated_fields": list(updates.keys())}
+
+    async def _tool_append_page_content(self, input_data: dict) -> dict:
+        """Append content blocks to a Notion page body."""
+        page_id = input_data["page_id"]
+        blocks = input_data["blocks"]
+        count = await self.notion.append_page_content(page_id, blocks)
+        return {"success": True, "page_id": page_id, "blocks_appended": count}
 
     async def _tool_get_task_detail(self, input_data: dict) -> dict:
         """Get full task details including body content."""

@@ -331,6 +331,49 @@ class NotionTaskCreator:
         logger.info("Updated task %s fields: %s", page_id, updated_fields)
         return page
 
+    async def append_page_content(self, page_id: str, blocks: list[dict]) -> int:
+        """Append content blocks to a Notion page body.
+
+        Each item in *blocks* should have:
+          - type: "heading_2" | "heading_3" | "paragraph" | "divider"
+          - text: str (not needed for divider)
+
+        Returns the number of blocks appended.
+        """
+        children = []
+        for b in blocks:
+            block_type = b["type"]
+            if block_type == "divider":
+                children.append({"object": "block", "type": "divider", "divider": {}})
+                continue
+
+            text = b.get("text", "")
+            # Notion rich_text has a 2000-char limit per element
+            chunks = [text[i:i + 2000] for i in range(0, max(len(text), 1), 2000)]
+            rich_text = [{"type": "text", "text": {"content": c}} for c in chunks]
+
+            children.append({
+                "object": "block",
+                "type": block_type,
+                block_type: {"rich_text": rich_text},
+            })
+
+        if not children:
+            return 0
+
+        # Notion allows max 100 blocks per append call
+        for i in range(0, len(children), 100):
+            batch = children[i:i + 100]
+            await _retry_on_rate_limit(
+                lambda batch=batch: self.client.blocks.children.append(
+                    block_id=page_id,
+                    children=batch,
+                )
+            )
+
+        logger.info("Appended %d blocks to page %s", len(children), page_id)
+        return len(children)
+
     async def search_tasks_by_title(
         self, query: str, active_only: bool = True
     ) -> list[dict]:
