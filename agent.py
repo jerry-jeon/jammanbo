@@ -130,6 +130,103 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "update_task",
+        "description": (
+            "Update one or more properties of an existing task in Notion. "
+            "Use this to rename a task, change its status, date, importance, urgency, "
+            "category, tags, product, or link. You can update multiple fields at once."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "page_id": {
+                    "type": "string",
+                    "description": "Notion page ID of the task to update",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "New title for the task",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ALL_STATUSES,
+                    "description": "New status",
+                },
+                "importance": {
+                    "type": "string",
+                    "enum": ["High", "Medium", "Low"],
+                    "description": "New importance level",
+                },
+                "urgency": {
+                    "type": "string",
+                    "enum": ["High", "Medium", "Low"],
+                    "description": "New urgency level",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["Must Do", "Nice to have"],
+                    "description": "New category",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": f"New tags from allowed list: {', '.join(ALLOWED_TAGS)}",
+                },
+                "product": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": f"New products from allowed list: {', '.join(ALLOWED_PRODUCTS)}",
+                },
+                "action_date": {
+                    "type": "string",
+                    "description": "New due date in YYYY-MM-DD format",
+                },
+                "link": {
+                    "type": "string",
+                    "description": "New URL",
+                },
+            },
+            "required": ["page_id"],
+        },
+    },
+    {
+        "name": "append_page_content",
+        "description": (
+            "Append text blocks (headings, paragraphs, dividers) to an existing Notion page body. "
+            "Use this to add notes, merge content from other pages, or build structured documents. "
+            "Call get_task_detail first to read source content, then append it to the target page."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "page_id": {
+                    "type": "string",
+                    "description": "Notion page ID to append content to",
+                },
+                "blocks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["heading_2", "heading_3", "paragraph", "divider"],
+                                "description": "Block type",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Text content (not needed for divider)",
+                            },
+                        },
+                        "required": ["type"],
+                    },
+                    "description": "Content blocks to append",
+                },
+            },
+            "required": ["page_id", "blocks"],
+        },
+    },
+    {
         "name": "request_user_confirmation",
         "description": (
             "Present tasks with inline buttons for the user to confirm a status change. "
@@ -176,8 +273,16 @@ You help manage tasks in a Notion database via Telegram.
 - Search existing tasks when the user asks about them
 - View task details and body content when the user asks what's inside a task (search first, then get_task_detail)
 - Update task status when asked (always confirm with the user first via request_user_confirmation)
+- Update task properties (title, date, importance, urgency, category, tags, etc.) using update_task
+- Append content to a page body (headings, paragraphs, dividers) using append_page_content
+- Merge pages: read content from source pages (get_task_detail), append to a target page, then mark sources as Done
 - Acknowledge memos/emotions warmly without creating tasks
 - Ask clarifying questions when a message is too vague to create a useful task
+
+## Multi-step requests
+When a user asks for multiple changes in one message, always do as much as you can.
+Never refuse the entire request because one part is impossible — complete the parts you can
+and clearly explain which parts you could not do and why.
 
 ## Current date context
 - Today: {today} ({day_of_week_korean})
@@ -400,8 +505,12 @@ class Agent:
                 return await self._tool_search_tasks(input_data)
             elif name == "update_task_status":
                 return await self._tool_update_task_status(input_data)
+            elif name == "update_task":
+                return await self._tool_update_task(input_data)
             elif name == "get_task_detail":
                 return await self._tool_get_task_detail(input_data)
+            elif name == "append_page_content":
+                return await self._tool_append_page_content(input_data)
             elif name == "request_user_confirmation":
                 return {"status": "confirmation_sent"}
             else:
@@ -447,6 +556,20 @@ class Agent:
         new_status = input_data["new_status"]
         await self.notion.update_task_status(page_id, new_status)
         return {"success": True, "page_id": page_id}
+
+    async def _tool_update_task(self, input_data: dict) -> dict:
+        """Update one or more properties of a task."""
+        page_id = input_data["page_id"]
+        updates = {k: v for k, v in input_data.items() if k != "page_id"}
+        await self.notion.update_task(page_id, updates)
+        return {"success": True, "page_id": page_id, "updated_fields": list(updates.keys())}
+
+    async def _tool_append_page_content(self, input_data: dict) -> dict:
+        """Append content blocks to a Notion page body."""
+        page_id = input_data["page_id"]
+        blocks = input_data["blocks"]
+        count = await self.notion.append_page_content(page_id, blocks)
+        return {"success": True, "page_id": page_id, "blocks_appended": count}
 
     async def _tool_get_task_detail(self, input_data: dict) -> dict:
         """Get full task details including body content."""
