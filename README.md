@@ -68,6 +68,8 @@ cp .env.example .env
 | `TELEGRAM_CHAT_ID` | 본인 Telegram chat ID |
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `NOTION_API_KEY` | Notion Integration API key |
+| `NOTION_DATABASE_ID` | Notion database UUID |
+| `NOTION_DATA_SOURCE_ID` | Notion data source UUID |
 
 ### Install & Run
 
@@ -107,6 +109,6 @@ JAMMANBO.md         # 프로젝트 설계 문서
 
 ## Notion DB
 
-Target database: **🪁 Sendbird Tasks** (`8c494555019043ebb83fe1afb5280467`)
+Target database: **🪁 Sendbird Tasks** (set via `NOTION_DATABASE_ID` env var)
 
 주요 property: Name, Status, Importance, Urgency, Category, Tags, Product, Action Date, Link, Source

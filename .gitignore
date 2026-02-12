@@ -22,3 +22,5 @@ Thumbs.db
 # Project
 failed_messages.json
 state.json
+logs/
+*.log

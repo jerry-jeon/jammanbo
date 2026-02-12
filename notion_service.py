@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import re
 from typing import Callable, TypeVar
 
 from notion_client import AsyncClient
@@ -12,6 +14,16 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 MAX_RETRIES = 3
+
+# Notion page/database IDs are UUIDs (with or without dashes)
+_NOTION_ID_RE = re.compile(r"^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$")
+
+
+def validate_page_id(page_id: str) -> str:
+    """Validate that a page_id looks like a Notion UUID. Returns the id or raises ValueError."""
+    if not _NOTION_ID_RE.match(page_id):
+        raise ValueError(f"Invalid Notion page ID format: {page_id!r}")
+    return page_id
 
 
 async def _retry_on_rate_limit(make_coro: Callable[[], T], max_retries: int = MAX_RETRIES) -> T:
@@ -37,8 +49,8 @@ async def _retry_on_rate_limit(make_coro: Callable[[], T], max_retries: int = MA
             )
             await asyncio.sleep(wait)
 
-DATABASE_ID = "8c494555019043ebb83fe1afb5280467"
-DATA_SOURCE_ID = "eca92760-91c2-4dff-ae10-ff5a080e8df0"
+DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
+DATA_SOURCE_ID = os.environ["NOTION_DATA_SOURCE_ID"]
 SOURCE_VALUE = "jammanbo-input"
 
 ACTIVE_STATUSES = ["TODO", "In progress", "To Schedule"]
@@ -282,6 +294,7 @@ class NotionTaskCreator:
 
     async def update_task_status(self, page_id: str, new_status: str) -> dict:
         """Update a task's status (e.g., to 'Won't do')."""
+        validate_page_id(page_id)
         page = await _retry_on_rate_limit(
             lambda: self.client.pages.update(
                 page_id=page_id,
@@ -297,6 +310,7 @@ class NotionTaskCreator:
         Supported keys in *updates*: name, status, importance, urgency,
         category, tags, product, action_date, link.
         """
+        validate_page_id(page_id)
         properties: dict = {}
 
         if "name" in updates:
@@ -340,6 +354,7 @@ class NotionTaskCreator:
 
         Returns the number of blocks appended.
         """
+        validate_page_id(page_id)
         children = []
         for b in blocks:
             block_type = b["type"]
@@ -401,12 +416,14 @@ class NotionTaskCreator:
 
     async def get_page(self, page_id: str) -> dict:
         """Fetch a single page by ID."""
+        validate_page_id(page_id)
         return await _retry_on_rate_limit(
             lambda: self.client.pages.retrieve(page_id=page_id)
         )
 
     async def get_page_content(self, page_id: str) -> str:
         """Fetch the body content (blocks) of a Notion page as plain text."""
+        validate_page_id(page_id)
         blocks = []
         has_more = True
         start_cursor = None

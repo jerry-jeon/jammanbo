@@ -163,8 +163,8 @@ Button actions:
 ## 3. Notion DB Schema (현행)
 
 ### Database: 🪁 Sendbird Tasks
-- **Database ID**: `8c494555019043ebb83fe1afb5280467`
-- **Data Source ID**: `eca92760-91c2-4dff-ae10-ff5a080e8df0`
+- **Database ID**: `$NOTION_DATABASE_ID`
+- **Data Source ID**: `$NOTION_DATA_SOURCE_ID`
 
 ### Properties
 
@@ -312,7 +312,7 @@ Button actions:
 ### Create a Task
 ```python
 {
-    "parent": {"database_id": "8c494555019043ebb83fe1afb5280467"},
+    "parent": {"database_id": "$NOTION_DATABASE_ID"},
     "properties": {
         "Name": {"title": [{"text": {"content": "PR 리뷰"}}]},
         "Status": {"select": {"name": "TODO"}},

@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from notion_service import NotionTaskCreator, _get_title, _get_status, _get_created_time
+from notion_service import NotionTaskCreator, _get_title, _get_status, _get_created_time, validate_page_id
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,13 @@ class CleanupManager:
             return
 
         action, page_id = data.split(":", 1)
+
+        try:
+            validate_page_id(page_id)
+        except ValueError:
+            logger.warning("Invalid page_id in cleanup callback: %s", page_id)
+            await query.edit_message_text("❌ Invalid task reference.")
+            return
 
         if action == "cleanup_keep":
             await self._handle_keep(query, page_id)

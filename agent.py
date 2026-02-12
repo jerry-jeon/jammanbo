@@ -517,7 +517,7 @@ class Agent:
                 return {"error": f"Unknown tool: {name}"}
         except Exception as e:
             logger.exception("Tool %s failed", name)
-            return {"error": str(e)}
+            return {"error": f"Tool '{name}' failed: {type(e).__name__}"}
 
     async def _tool_create_task(self, input_data: dict) -> dict:
         """Create a task in Notion via the existing NotionTaskCreator."""
