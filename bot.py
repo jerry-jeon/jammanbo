@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -89,7 +90,15 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
     await update.message.reply_text("🔄 Running manual scan...")
-    await scheduled_daily_job()
+    try:
+        await asyncio.wait_for(scheduled_daily_job(), timeout=120.0)
+        await update.message.reply_text("✅ Scan complete.")
+    except asyncio.TimeoutError:
+        logger.error("Manual scan timed out after 120s")
+        await update.message.reply_text("⏰ Scan timed out. Check logs for details.")
+    except Exception:
+        logger.exception("Manual scan failed")
+        await update.message.reply_text("❌ Scan failed. Check logs for details.")
 
 
 # ── Main message handler ────────────────────────────────────────

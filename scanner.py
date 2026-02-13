@@ -34,6 +34,23 @@ class ProactiveManager:
         self.chat_id = chat_id
         self.agent = agent
 
+    async def _safe_send(self, text: str):
+        """Send a message with Markdown, falling back to plain text on parse failure."""
+        if len(text) > 4000:
+            text = text[:3997] + "…"
+        try:
+            return await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode="Markdown",
+            )
+        except Exception:
+            logger.warning("Markdown parse failed in proactive message, falling back to plain text")
+            return await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+            )
+
     async def _fetch_workspace_summary(self) -> str:
         """Fetch real workspace data from Notion to give the agent accurate context."""
         notion: NotionTaskCreator = self.agent.notion
@@ -52,14 +69,20 @@ class ProactiveManager:
 
         try:
             overdue, today_tasks, week_tasks, stale_tasks, (in_progress, todo) = (
-                await asyncio.gather(
-                    notion.query_overdue_tasks(today_iso),
-                    notion.query_today_tasks(today_iso),
-                    notion.query_this_week_tasks(today_iso, end_of_week.isoformat()),
-                    notion.query_stale_tasks(stale_cutoff),
-                    notion.query_active_task_count(),
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        notion.query_overdue_tasks(today_iso),
+                        notion.query_today_tasks(today_iso),
+                        notion.query_this_week_tasks(today_iso, end_of_week.isoformat()),
+                        notion.query_stale_tasks(stale_cutoff),
+                        notion.query_active_task_count(),
+                    ),
+                    timeout=30.0,
                 )
             )
+        except asyncio.TimeoutError:
+            logger.error("Workspace summary fetch timed out after 30s")
+            return ""
         except Exception:
             logger.exception("Failed to fetch workspace summary")
             return ""
@@ -138,11 +161,7 @@ class ProactiveManager:
         user_read = self._has_user_read(state)
 
         if user_read:
-            msg = await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=result.text,
-                parse_mode="Markdown",
-            )
+            msg = await self._safe_send(result.text)
             state["proactive_message_id"] = msg.message_id
         else:
             prev_id = state.get("proactive_message_id")
@@ -156,18 +175,10 @@ class ProactiveManager:
                     )
                 except Exception:
                     logger.warning("Failed to edit proactive message, sending new one")
-                    msg = await self.bot.send_message(
-                        chat_id=self.chat_id,
-                        text=result.text,
-                        parse_mode="Markdown",
-                    )
+                    msg = await self._safe_send(result.text)
                     state["proactive_message_id"] = msg.message_id
             else:
-                msg = await self.bot.send_message(
-                    chat_id=self.chat_id,
-                    text=result.text,
-                    parse_mode="Markdown",
-                )
+                msg = await self._safe_send(result.text)
                 state["proactive_message_id"] = msg.message_id
 
         state["proactive_message_time"] = datetime.now(KST).isoformat()
