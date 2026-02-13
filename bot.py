@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -20,7 +21,7 @@ from telegram.ext import (
 
 from agent import Agent, AgentResponse, get_conversation_messages, save_conversation_turn
 from cleanup import CleanupManager
-from interaction_logger import InteractionLog
+from interaction_logger import InteractionLog, LOG_FILE
 from notion_service import NotionTaskCreator, validate_page_id
 from scanner import ProactiveManager
 
@@ -89,7 +90,69 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
     await update.message.reply_text("🔄 Running manual scan...")
-    await scheduled_daily_job()
+    try:
+        await asyncio.wait_for(scheduled_daily_job(), timeout=120.0)
+        await update.message.reply_text("✅ Scan complete.")
+    except asyncio.TimeoutError:
+        logger.error("Manual scan timed out after 120s")
+        await update.message.reply_text("⏰ Scan timed out. Check logs for details.")
+    except Exception:
+        logger.exception("Manual scan failed")
+        await update.message.reply_text("❌ Scan failed. Check logs for details.")
+
+
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send recent agent log entries for debugging."""
+    if update.effective_chat.id != TELEGRAM_CHAT_ID:
+        return
+
+    # Parse optional count argument: /logs 20
+    count = 10
+    if context.args:
+        try:
+            count = min(int(context.args[0]), 50)
+        except ValueError:
+            pass
+
+    if not LOG_FILE.exists():
+        await update.message.reply_text("📋 No log file found yet.")
+        return
+
+    try:
+        lines = LOG_FILE.read_text(encoding="utf-8").strip().splitlines()
+    except Exception:
+        await update.message.reply_text("❌ Failed to read log file.")
+        return
+
+    if not lines:
+        await update.message.reply_text("📋 Log file is empty.")
+        return
+
+    recent = lines[-count:]
+    # Format each line compactly for readability
+    output_parts = []
+    for line in recent:
+        try:
+            entry = json.loads(line)
+            ts = entry.get("ts", "?")[:19]
+            mode = entry.get("mode", "?")
+            sent = "✅" if entry.get("response_sent") else "❌"
+            err = entry.get("error", "")
+            user_msg = entry.get("user_message", "")[:60]
+            duration = entry.get("duration_ms", 0)
+            steps = len(entry.get("steps", []))
+            summary = f"[{ts}] {mode} {sent} {duration}ms {steps}steps"
+            if err:
+                summary += f" ERR:{err[:80]}"
+            summary += f"\n  → {user_msg}"
+            output_parts.append(summary)
+        except json.JSONDecodeError:
+            output_parts.append(line[:120])
+
+    text = f"📋 Last {len(recent)} log entries:\n\n" + "\n\n".join(output_parts)
+    if len(text) > 4000:
+        text = text[:3997] + "…"
+    await update.message.reply_text(text)
 
 
 # ── Main message handler ────────────────────────────────────────
@@ -322,6 +385,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(
         CallbackQueryHandler(handle_cleanup_callback, pattern=r"^cleanup_")
     )
