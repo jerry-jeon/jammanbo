@@ -48,6 +48,7 @@ agent = Agent(api_key=ANTHROPIC_API_KEY, notion=notion_creator)
 # Phase 2 & 3 modules — initialized in post_init() after app is built
 proactive_manager: ProactiveManager | None = None
 cleanup_manager: CleanupManager | None = None
+scheduler: AsyncIOScheduler | None = None  # must be global to prevent GC
 
 # Pending action store for inline buttons: short key → {page_id, new_status, title}
 _pending_actions: dict[str, dict] = {}
@@ -106,13 +107,19 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
 
-    # Parse optional count argument: /logs 20
+    # Parse optional arguments: /logs [errors] [count]
+    # Examples: /logs, /logs 20, /logs errors, /logs errors 30
     count = 10
+    errors_only = False
     if context.args:
-        try:
-            count = min(int(context.args[0]), 50)
-        except ValueError:
-            pass
+        for arg in context.args:
+            if arg.lower() in ("error", "errors"):
+                errors_only = True
+            else:
+                try:
+                    count = min(int(arg), 50)
+                except ValueError:
+                    pass
 
     if not LOG_FILE.exists():
         await update.message.reply_text("📋 No log file found yet.")
@@ -128,8 +135,15 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("📋 Log file is empty.")
         return
 
+    if errors_only:
+        lines = [ln for ln in lines if '"error":' in ln or '"response_sent": false' in ln]
+        if not lines:
+            await update.message.reply_text("📋 No error entries found.")
+            return
+
     recent = lines[-count:]
     # Format each line compactly for readability
+    label = "error" if errors_only else "log"
     output_parts = []
     for line in recent:
         try:
@@ -149,7 +163,7 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except json.JSONDecodeError:
             output_parts.append(line[:120])
 
-    text = f"📋 Last {len(recent)} log entries:\n\n" + "\n\n".join(output_parts)
+    text = f"📋 Last {len(recent)} {label} entries:\n\n" + "\n\n".join(output_parts)
     if len(text) > 4000:
         text = text[:3997] + "…"
     await update.message.reply_text(text)
@@ -344,7 +358,7 @@ async def scheduled_hourly_proactive() -> None:
 
 async def post_init(application: Application) -> None:
     """Called after the event loop is running — safe to start AsyncIOScheduler."""
-    global proactive_manager, cleanup_manager
+    global proactive_manager, cleanup_manager, scheduler
 
     proactive_manager = ProactiveManager(
         bot=application.bot, chat_id=TELEGRAM_CHAT_ID, agent=agent
