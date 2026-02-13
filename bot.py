@@ -48,6 +48,7 @@ agent = Agent(api_key=ANTHROPIC_API_KEY, notion=notion_creator)
 # Phase 2 & 3 modules — initialized in post_init() after app is built
 proactive_manager: ProactiveManager | None = None
 cleanup_manager: CleanupManager | None = None
+scheduler: AsyncIOScheduler | None = None  # must be global to prevent GC
 
 # Pending action store for inline buttons: short key → {page_id, new_status, title}
 _pending_actions: dict[str, dict] = {}
@@ -344,7 +345,7 @@ async def scheduled_hourly_proactive() -> None:
 
 async def post_init(application: Application) -> None:
     """Called after the event loop is running — safe to start AsyncIOScheduler."""
-    global proactive_manager, cleanup_manager
+    global proactive_manager, cleanup_manager, scheduler
 
     proactive_manager = ProactiveManager(
         bot=application.bot, chat_id=TELEGRAM_CHAT_ID, agent=agent

@@ -150,7 +150,14 @@ class ProactiveManager:
         ]
 
         try:
-            result = await self.agent.run(messages, mode="proactive", interaction_log=ilog)
+            result = await asyncio.wait_for(
+                self.agent.run(messages, mode="proactive", interaction_log=ilog),
+                timeout=60.0,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Proactive agent run timed out after 60s")
+            ilog.finalize(response_text="", response_sent=False, error="agent.run timed out (60s)")
+            return
         except Exception:
             logger.exception("Proactive agent run failed")
             ilog.finalize(response_text="", response_sent=False, error="agent.run failed")
