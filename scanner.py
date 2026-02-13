@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from telegram import Bot
 
 from agent import save_conversation_turn
+from interaction_logger import InteractionLog
 from notion_service import NotionTaskCreator, _get_title, _get_status, _get_action_date
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,7 @@ class ProactiveManager:
     async def run_proactive_check(self) -> None:
         """Called every hour 9am-11pm. Agent queries Notion and decides what to say."""
         logger.info("Running proactive check")
+        ilog = InteractionLog(user_message="[proactive check-in]", mode="proactive")
 
         workspace_summary = await self._fetch_workspace_summary()
 
@@ -148,38 +150,56 @@ class ProactiveManager:
         ]
 
         try:
-            result = await self.agent.run(messages, mode="proactive")
+            result = await self.agent.run(messages, mode="proactive", interaction_log=ilog)
         except Exception:
             logger.exception("Proactive agent run failed")
+            ilog.finalize(response_text="", response_sent=False, error="agent.run failed")
             return
 
         if not result.text or result.text.strip() == "SKIP":
             logger.info("Proactive check: nothing to send (SKIP)")
+            ilog.finalize(response_text="SKIP", response_sent=False)
             return
 
         state = _load_state()
         user_read = self._has_user_read(state)
 
-        if user_read:
-            msg = await self._safe_send(result.text)
-            state["proactive_message_id"] = msg.message_id
-        else:
-            prev_id = state.get("proactive_message_id")
-            if prev_id:
-                try:
-                    await self.bot.edit_message_text(
-                        chat_id=self.chat_id,
-                        message_id=prev_id,
-                        text=result.text,
-                        parse_mode="Markdown",
-                    )
-                except Exception:
-                    logger.warning("Failed to edit proactive message, sending new one")
-                    msg = await self._safe_send(result.text)
-                    state["proactive_message_id"] = msg.message_id
-            else:
+        response_sent = False
+        send_error = None
+        try:
+            if user_read:
                 msg = await self._safe_send(result.text)
                 state["proactive_message_id"] = msg.message_id
+            else:
+                prev_id = state.get("proactive_message_id")
+                if prev_id:
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=self.chat_id,
+                            message_id=prev_id,
+                            text=result.text,
+                            parse_mode="Markdown",
+                        )
+                    except Exception:
+                        logger.warning("Failed to edit proactive message, sending new one")
+                        msg = await self._safe_send(result.text)
+                        state["proactive_message_id"] = msg.message_id
+                else:
+                    msg = await self._safe_send(result.text)
+                    state["proactive_message_id"] = msg.message_id
+            response_sent = True
+        except Exception as e:
+            logger.exception("Failed to send proactive message to Telegram")
+            send_error = str(e)
+
+        ilog.finalize(
+            response_text=result.text or "",
+            response_sent=response_sent,
+            error=send_error,
+        )
+
+        if not response_sent:
+            return
 
         state["proactive_message_time"] = datetime.now(KST).isoformat()
         _save_state(state)
