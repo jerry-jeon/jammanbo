@@ -107,13 +107,19 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
 
-    # Parse optional count argument: /logs 20
+    # Parse optional arguments: /logs [errors] [count]
+    # Examples: /logs, /logs 20, /logs errors, /logs errors 30
     count = 10
+    errors_only = False
     if context.args:
-        try:
-            count = min(int(context.args[0]), 50)
-        except ValueError:
-            pass
+        for arg in context.args:
+            if arg.lower() in ("error", "errors"):
+                errors_only = True
+            else:
+                try:
+                    count = min(int(arg), 50)
+                except ValueError:
+                    pass
 
     if not LOG_FILE.exists():
         await update.message.reply_text("📋 No log file found yet.")
@@ -129,8 +135,15 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("📋 Log file is empty.")
         return
 
+    if errors_only:
+        lines = [ln for ln in lines if '"error":' in ln or '"response_sent": false' in ln]
+        if not lines:
+            await update.message.reply_text("📋 No error entries found.")
+            return
+
     recent = lines[-count:]
     # Format each line compactly for readability
+    label = "error" if errors_only else "log"
     output_parts = []
     for line in recent:
         try:
@@ -150,7 +163,7 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except json.JSONDecodeError:
             output_parts.append(line[:120])
 
-    text = f"📋 Last {len(recent)} log entries:\n\n" + "\n\n".join(output_parts)
+    text = f"📋 Last {len(recent)} {label} entries:\n\n" + "\n\n".join(output_parts)
     if len(text) > 4000:
         text = text[:3997] + "…"
     await update.message.reply_text(text)
