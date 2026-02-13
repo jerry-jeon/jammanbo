@@ -104,17 +104,28 @@ class CleanupManager:
         status = _get_status(page)
         created = _get_created_time(page)[:10]
 
+        # Fetch page content for summary
+        try:
+            content = await self.notion.get_page_content(page_id)
+        except Exception:
+            logger.exception("Failed to fetch content for %s", page_id)
+            content = ""
+
+        summary = self._make_summary(content)
+
         text = (
             f"🧹 *Cleanup candidate*\n"
             f"*{title}*\n"
             f"Status: {status} | Created: {created}"
         )
+        if summary:
+            text += f"\n\n{summary}"
 
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("Keep ✓", callback_data=f"cleanup_keep:{page_id}"),
+                InlineKeyboardButton("Done ✔", callback_data=f"cleanup_done:{page_id}"),
                 InlineKeyboardButton("Delete ✗", callback_data=f"cleanup_delete:{page_id}"),
-                InlineKeyboardButton("Later ⏭", callback_data=f"cleanup_later:{page_id}"),
             ]
         ])
 
@@ -147,10 +158,10 @@ class CleanupManager:
 
         if action == "cleanup_keep":
             await self._handle_keep(query, page_id)
+        elif action == "cleanup_done":
+            await self._handle_done(query, page_id)
         elif action == "cleanup_delete":
             await self._handle_delete(query, page_id)
-        elif action == "cleanup_later":
-            await self._handle_later(query, page_id)
 
     async def _handle_keep(self, query, page_id: str) -> None:
         """Mark as valid — remove from queue."""
@@ -169,17 +180,29 @@ class CleanupManager:
             logger.exception("Failed to update Notion for %s", page_id)
             await query.edit_message_text("❌ Notion update failed. Please try again.")
 
-    async def _handle_later(self, query, page_id: str) -> None:
-        """Move to end of queue."""
-        state = _load_state()
-        queue = state.get("cleanup_queue", [])
-        if page_id in queue:
-            queue.remove(page_id)
-        queue.append(page_id)
-        state["cleanup_queue"] = queue
-        _save_state(state)
-        title = self._get_title_from_message(query.message.text)
-        await query.edit_message_text(f"⏭ Deferred: {title}")
+    async def _handle_done(self, query, page_id: str) -> None:
+        """Update Notion to 'Done', remove from queue."""
+        try:
+            await self.notion.update_task_status(page_id, "Done")
+            self._remove_from_queue(page_id)
+            title = self._get_title_from_message(query.message.text)
+            await query.edit_message_text(f"✅ Done: {title}\nMarked as Done in Notion")
+        except Exception:
+            logger.exception("Failed to update Notion for %s", page_id)
+            await query.edit_message_text("❌ Notion update failed. Please try again.")
+
+    @staticmethod
+    def _make_summary(content: str, max_len: int = 200) -> str:
+        """Truncate page content into a short summary for the cleanup message."""
+        if not content:
+            return "(내용 없음)"
+        content = content.strip()
+        if len(content) > max_len:
+            content = content[:max_len].rstrip() + "…"
+        # Escape Markdown special chars to avoid Telegram parse errors
+        for ch in ("*", "_", "`", "["):
+            content = content.replace(ch, "\\" + ch)
+        return content
 
     def _remove_from_queue(self, page_id: str) -> None:
         state = _load_state()
