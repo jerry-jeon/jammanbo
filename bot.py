@@ -21,7 +21,7 @@ from telegram.ext import (
 from agent import Agent, AgentResponse, get_conversation_messages, save_conversation_turn
 from cleanup import CleanupManager
 from interaction_logger import InteractionLog
-from notion_service import NotionTaskCreator
+from notion_service import NotionTaskCreator, validate_page_id
 from scanner import ProactiveManager
 
 load_dotenv()
@@ -228,6 +228,13 @@ async def handle_action_callback(
 
     new_status = pending["new_status"]
     page_id = pending["page_id"]
+
+    try:
+        validate_page_id(page_id)
+    except ValueError:
+        logger.warning("Invalid page_id in action callback: %s", page_id)
+        await query.edit_message_text("❌ Invalid task reference.")
+        return
 
     if not new_status:
         await query.edit_message_text("❌ No target status specified.")
